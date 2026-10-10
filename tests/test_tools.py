@@ -81,3 +81,96 @@ def test_advisory_result_telemetry():
     assert "get_indian_bank_fd_rates" in result.tools_used
     assert result.total_tokens == 800
 
+
+def test_ttl_cache_mechanism():
+    from my_invest.tools.cache import ttl_cache, get_aggregated_cache_summary
+    
+    counter = 0
+
+    @ttl_cache(maxsize=5, ttl_seconds=60)
+    def dummy_expensive_calc(x: int) -> int:
+        nonlocal counter
+        counter += 1
+        return x * 2
+
+    # First call: cache miss
+    val1 = dummy_expensive_calc(10)
+    assert val1 == 20
+    assert counter == 1
+    assert dummy_expensive_calc.cache_info().misses == 1
+    assert dummy_expensive_calc.cache_info().hits == 0
+
+    # Second call with same arg: cache hit (no computation)
+    val2 = dummy_expensive_calc(10)
+    assert val2 == 20
+    assert counter == 1
+    assert dummy_expensive_calc.cache_info().hits == 1
+
+    # Clear cache
+    dummy_expensive_calc.cache_clear()
+    assert dummy_expensive_calc.cache_info().hits == 0
+    assert dummy_expensive_calc.cache_info().currsize == 0
+
+
+def test_tool_caching_integration():
+    from my_invest.tools.calculator_tool import calculate_fd_maturity
+    from my_invest.tools.cache import get_aggregated_cache_summary
+
+    # Ensure clean state for test
+    calculate_fd_maturity.cache_clear()
+    
+    # Run twice
+    res1 = calculate_fd_maturity(100000.0, 7.25, 3.0)
+    res2 = calculate_fd_maturity(100000.0, 7.25, 3.0)
+    
+    assert res1 == res2
+    assert calculate_fd_maturity.cache_info().hits >= 1
+    
+    summary = get_aggregated_cache_summary()
+    assert "total_hits" in summary
+    assert summary["total_hits"] >= 1
+
+
+def test_qdrant_semantic_cache():
+    from my_invest.cache.qdrant_cache import QdrantSemanticCache
+    
+    # Use isolated test collection
+    test_cache = QdrantSemanticCache(
+        url=None,
+        api_key=None,
+        collection_name="test_pytest_semantic_cache",
+        threshold=0.85,
+        enabled=True,
+    )
+    
+    # Store initial blueprint
+    prompt_a = "I want to invest 2 lacs in Indian bank fixed deposits and mutual funds"
+    blueprint_text = "# Recommended Portfolio: 50% FD in SBI and 50% Parag Parikh Flexi Cap"
+    stored = test_cache.store(
+        prompt=prompt_a,
+        text=blueprint_text,
+        tools_used=("get_indian_bank_fd_rates", "calculate_fd_maturity"),
+        model_name="qwen/qwen3.8-27b",
+    )
+    assert stored is True
+
+    # Lookup with semantically equivalent query (different words, same financial intent)
+    prompt_b = "Suggest plan to invest 2 lakh inr in bank FD and mutual funds"
+    match = test_cache.lookup(prompt_b)
+    
+    assert match is not None
+    assert match.similarity_score >= 0.85
+    assert match.text == blueprint_text
+    assert "get_indian_bank_fd_rates" in match.tools_used
+
+    # Lookup with an unrelated query should miss
+    prompt_unrelated = "What is the capital of France and best tourist spots?"
+    unrelated_match = test_cache.lookup(prompt_unrelated)
+    assert unrelated_match is None
+
+    stats = test_cache.get_stats()
+    assert stats["hits"] >= 1
+    assert stats["misses"] >= 1
+
+
+

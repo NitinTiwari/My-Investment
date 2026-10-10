@@ -17,8 +17,10 @@ except Exception:
     pass
 
 from my_invest.advisor_service import AdvisorService, AdvisoryResult
+from my_invest.cache import get_semantic_cache
 from my_invest.settings import settings
 from my_invest.tools.bank_fd_tool import BENCHMARK_FD_RATES, get_indian_bank_fd_rates
+from my_invest.tools.cache import get_aggregated_cache_summary
 from my_invest.tools.calculator_tool import calculate_fd_maturity, calculate_mf_returns
 from my_invest.tools.mutual_fund_tool import (
     TOP_CURATED_MUTUAL_FUNDS,
@@ -97,6 +99,19 @@ with st.sidebar:
     st.divider()
     st.info("💡 **Tip**: All recommendations prioritize **Direct Plans** (0% distributor commission) and highlight **DICGC insurance (up to ₹5 Lakhs)** on bank deposits.")
 
+    st.divider()
+    # Qdrant Semantic Cache Sidebar Panel
+    sem_cache = get_semantic_cache()
+    sem_stats = sem_cache.get_stats()
+    st.markdown("**⚡ Qdrant Semantic Cache (Tier 2)**")
+    mode_icon = "🟢" if "Cloud" in sem_stats["mode"] else "🔵"
+    st.caption(f"{mode_icon} **Status**: `{sem_stats['mode']}`")
+    st.caption(f"📦 **Collection**: `{sem_stats['collection_name']}`")
+    st.caption(f"🧠 **Indexed Blueprints**: **{sem_stats['total_cached_blueprints']}**")
+    st.caption(f"🎯 **Similarity Threshold**: `{sem_stats['threshold']}`")
+    if sem_stats["cloud_url"] and "http" in sem_stats["cloud_url"]:
+        st.caption(f"🌐 **Endpoint**: `{sem_stats['cloud_url'].split('@')[-1][:35]}...`")
+
 # Tabs for multi-feature exploration
 tab_advisor, tab_fd_rates, tab_mf_lookup, tab_calculator = st.tabs([
     "🤖 AI Portfolio Advisor",
@@ -154,6 +169,11 @@ with tab_advisor:
                 tools_badge = f"{res.tool_call_count} tool{'s' if res.tool_call_count != 1 else ''}"
                 llm_badge = f"{res.llm_call_count} LLM call{'s' if res.llm_call_count != 1 else ''}"
                 st.caption(f"⚡ {res.duration_ms / 1000:.1f}s | 🤖 {llm_badge} | 🛠️ {tools_badge}")
+
+            if getattr(res, "is_cached", False):
+                st.success(
+                    f"⚡ **Served by Qdrant Semantic Cache** (Similarity Score: **{res.similarity_score * 100:.1f}%**) — **0 LLM inferences** and **0 tool calls** consumed! Delivered in {res.duration_ms:.0f}ms."
+                )
 
             st.markdown(res.text)
 
@@ -326,7 +346,53 @@ if current_res:
     else:
         st.info("ℹ️ **Direct Synthesis**: The LLM resolved the query directly without requiring external tool calls.")
 
+    # Tier 1 Tool Cache Live Telemetry
+    cache_summary = get_aggregated_cache_summary()
+    sem_stats = get_semantic_cache().get_stats()
+    
+    col_c1, col_c2 = st.columns(2)
+    with col_c1:
+        st.markdown(
+            f"""
+            <div style="background: rgba(30, 41, 59, 0.7); border: 1px solid #334155; border-radius: 8px; padding: 10px 14px; margin-top: 14px; margin-bottom: 12px;">
+                <div style="color: #38bdf8; font-weight: 700; font-size: 0.9rem;">⚡ Tier 1: Tool TTL Cache</div>
+                <div style="color: #f8fafc; font-weight: 600; font-size: 1.1rem; margin-top: 2px;">{cache_summary['total_hits']} Hits ({cache_summary['hit_rate_pct']}% hit rate)</div>
+                <div style="font-size: 0.8rem; color: #94a3b8; margin-top: 2px;">{cache_summary['total_misses']} live network fetches | &lt;1ms cached execution</div>
+            </div>
+            """,
+            unsafe_allow_html=True,
+        )
+    with col_c2:
+        sem_mode_badge = "Cloud" if "Cloud" in sem_stats["mode"] else "Disk"
+        st.markdown(
+            f"""
+            <div style="background: rgba(30, 41, 59, 0.7); border: 1px solid #334155; border-radius: 8px; padding: 10px 14px; margin-top: 14px; margin-bottom: 12px;">
+                <div style="color: #a855f7; font-weight: 700; font-size: 0.9rem;">🧠 Tier 2: Qdrant Semantic Cache ({sem_mode_badge})</div>
+                <div style="color: #f8fafc; font-weight: 600; font-size: 1.1rem; margin-top: 2px;">{sem_stats['hits']} Hits ({sem_stats['hit_rate_pct']}% savings)</div>
+                <div style="font-size: 0.8rem; color: #94a3b8; margin-top: 2px;">{sem_stats['total_cached_blueprints']} vector blueprints indexed | Cosine threshold: {sem_stats['threshold']}</div>
+            </div>
+            """,
+            unsafe_allow_html=True,
+        )
+
     with st.expander(f"📜 View Session Query History & Tool Audit Trail ({len(st.session_state.query_history)} queries executed)"):
+        # Tool Cache breakdown
+        if cache_summary.get("caches"):
+            st.markdown("**Tool Cache Breakdown (Tier 1 TTL Engine):**")
+            cache_rows = []
+            for name, c in cache_summary["caches"].items():
+                ttl_str = f"{c.ttl_seconds // 3600}h" if c.ttl_seconds >= 3600 else f"{c.ttl_seconds // 60}m"
+                cache_rows.append({
+                    "Tool Name": name,
+                    "Hits (Instant)": c.hits,
+                    "Misses (Network)": c.misses,
+                    "Hit Rate": f"{c.hit_rate_pct}%",
+                    "Entries in Cache": f"{c.currsize}/{c.maxsize}",
+                    "TTL Expiry": ttl_str,
+                })
+            st.dataframe(pd.DataFrame(cache_rows), width="stretch", hide_index=True)
+            st.divider()
+
         for i, q in enumerate(reversed(st.session_state.query_history), 1):
             q_num = len(st.session_state.query_history) - i + 1
             st.markdown(f"**Query #{q_num}**: *\"{q['prompt'][:140]}{'...' if len(q['prompt']) > 140 else ''}\"*")

@@ -1,4 +1,5 @@
 from agno.tools.duckduckgo import DuckDuckGoTools
+from my_invest.tools.cache import ttl_cache
 
 
 # Verified benchmark rates across top Indian banks (Updated quarterly)
@@ -27,6 +28,7 @@ BENCHMARK_FD_RATES = {
 }
 
 
+@ttl_cache(maxsize=128, ttl_seconds=86400)
 def get_indian_bank_fd_rates(query: str = "current bank FD interest rates in India") -> str:
     """
     Searches online for the latest Indian bank fixed deposit interest rates (SBI, HDFC, ICICI, PNB, and Small Finance Banks),

@@ -1,5 +1,6 @@
 import requests
 import yfinance as yf
+from my_invest.tools.cache import ttl_cache
 
 # Curated reference directory of top-rated, consistent Indian Mutual Funds across AMFI categories
 TOP_CURATED_MUTUAL_FUNDS = {
@@ -30,6 +31,7 @@ TOP_CURATED_MUTUAL_FUNDS = {
 }
 
 
+@ttl_cache(maxsize=256, ttl_seconds=86400)
 def search_indian_mutual_funds(query: str) -> str:
     """
     Searches the official AMFI mutual fund database for Indian mutual funds matching the query.
@@ -59,6 +61,7 @@ def search_indian_mutual_funds(query: str) -> str:
     return "Could not retrieve mutual fund data."
 
 
+@ttl_cache(maxsize=512, ttl_seconds=43200)
 def get_mutual_fund_nav(scheme_code: int) -> str:
     """
     Fetches the latest official Net Asset Value (NAV), fund house, scheme category,
@@ -88,6 +91,7 @@ def get_mutual_fund_nav(scheme_code: int) -> str:
     return f"Unable to fetch NAV for scheme {scheme_code}."
 
 
+@ttl_cache(maxsize=32, ttl_seconds=86400)
 def get_top_indian_mutual_funds_by_category(category: str = "all") -> str:
     """
     Returns a curated list of top-performing, highly rated Indian Mutual Funds across categories
@@ -112,6 +116,7 @@ def get_top_indian_mutual_funds_by_category(category: str = "all") -> str:
     return "\n".join(lines)
 
 
+@ttl_cache(maxsize=64, ttl_seconds=900)
 def get_indian_etf_price(ticker: str) -> str:
     """
     Fetches live market price and details of Indian Exchange Traded Funds (ETFs)

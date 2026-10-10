@@ -4,6 +4,7 @@ from typing import Any
 from agno.agent import Agent
 
 from my_invest.agents.advisor_agent import create_investment_advisor_agent
+from my_invest.cache import get_semantic_cache
 from my_invest.settings import settings
 
 
@@ -19,12 +20,15 @@ class AdvisoryResult:
     input_tokens: int = 0
     output_tokens: int = 0
     total_tokens: int = 0
+    is_cached: bool = False
+    similarity_score: float = 0.0
 
 
 class AdvisorService:
     def __init__(self) -> None:
         self.settings = settings
         self._agent: Agent | None = None
+        self._cache = get_semantic_cache()
 
     def get_agent(self) -> Agent:
         if self._agent is None:
@@ -36,6 +40,26 @@ class AdvisorService:
             raise ValueError("Investment prompt cannot be empty.")
 
         started_at = perf_counter()
+
+        # Tier 2: Check Qdrant Semantic Cache first
+        cached_match = self._cache.lookup(prompt)
+        if cached_match is not None:
+            duration_ms = round((perf_counter() - started_at) * 1000, 2)
+            return AdvisoryResult(
+                prompt=prompt,
+                text=cached_match.text,
+                duration_ms=duration_ms,
+                model_name=f"{cached_match.model_name} (⚡ Qdrant Semantic Cache Hit: {cached_match.similarity_score * 100:.1f}%)",
+                llm_call_count=0,
+                tool_call_count=0,
+                tools_used=cached_match.tools_used,
+                input_tokens=0,
+                output_tokens=0,
+                total_tokens=0,
+                is_cached=True,
+                similarity_score=cached_match.similarity_score,
+            )
+
         agent = self.get_agent()
         response = agent.run(prompt)
 
@@ -87,6 +111,14 @@ class AdvisorService:
             output_tokens = getattr(metrics, "output_tokens", 0) or 0
             total_tokens = getattr(metrics, "total_tokens", 0) or (input_tokens + output_tokens)
 
+        # Tier 2: Store generated advisory in Qdrant Semantic Cache
+        self._cache.store(
+            prompt=prompt,
+            text=text,
+            tools_used=tuple(tools_list),
+            model_name=self.settings.model_name,
+        )
+
         return AdvisoryResult(
             prompt=prompt,
             text=text,
@@ -98,4 +130,5 @@ class AdvisorService:
             input_tokens=input_tokens,
             output_tokens=output_tokens,
             total_tokens=total_tokens,
+            is_cached=False,
         )

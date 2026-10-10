@@ -1,3 +1,7 @@
+from my_invest.tools.cache import ttl_cache
+
+
+@ttl_cache(maxsize=128, ttl_seconds=3600)
 def calculate_fd_maturity(
     principal_inr: float,
     annual_rate_pct: float,
@@ -38,6 +42,7 @@ def calculate_fd_maturity(
         return f"Error calculating FD maturity: {e}"
 
 
+@ttl_cache(maxsize=128, ttl_seconds=3600)
 def calculate_mf_returns(
     lumpsum_inr: float,
     expected_cagr_pct: float,
@@ -74,6 +79,7 @@ def calculate_mf_returns(
         return f"Error calculating Mutual Fund returns: {e}"
 
 
+@ttl_cache(maxsize=128, ttl_seconds=3600)
 def calculate_portfolio_split(
     total_corpus_inr: float,
     fd_ratio_pct: float = 50.0,
