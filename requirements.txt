@@ -1,0 +1,11 @@
+agno>=3.0.10
+ddgs>=9.16.0
+dotenv>=0.9.9
+groq<1.0.0
+pydantic>=2.13.5
+pydantic-settings>=2.0.0
+pytest>=8.0.0
+requests>=2.31.0
+streamlit>=1.40.0
+yfinance>=1.7.0
+pandas>=2.0.0
