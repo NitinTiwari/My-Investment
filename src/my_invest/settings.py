@@ -1,6 +1,7 @@
 from functools import lru_cache
 import os
 from pathlib import Path
+from typing import Any
 from dotenv import load_dotenv
 from pydantic import Field
 from pydantic_settings import BaseSettings, SettingsConfigDict
@@ -13,23 +14,39 @@ else:
     load_dotenv()
 
 
+def _get_config(key: str, default: Any = None) -> Any:
+    """Retrieve config from os.environ or Streamlit Cloud st.secrets."""
+    val = os.getenv(key)
+    if val is not None and val != "":
+        return val
+    try:
+        import streamlit as st
+        if hasattr(st, "secrets") and key in st.secrets:
+            s_val = st.secrets[key]
+            if s_val is not None and s_val != "":
+                return str(s_val)
+    except Exception:
+        pass
+    return default
+
+
 class Settings(BaseSettings):
     model_config = SettingsConfigDict(
         extra='ignore',
     )
 
     app_name: str = 'My-Invest: FD & Mutual Fund Advisor'
-    groq_api_key: str | None = Field(default_factory=lambda: os.getenv('GROQ_API_KEY'))
-    model_name: str = Field(default_factory=lambda: os.getenv('GROQ_MODEL', 'qwen/qwen3.8-27b'))
+    groq_api_key: str | None = Field(default_factory=lambda: _get_config('GROQ_API_KEY'))
+    model_name: str = Field(default_factory=lambda: _get_config('GROQ_MODEL', 'qwen/qwen3.8-27b'))
     default_investment_amount: float = 200000.0
     agent_tool_call_limit: int = 8
     max_tokens: int = 900
     log_level: str = 'INFO'
-    qdrant_url: str | None = Field(default_factory=lambda: os.getenv('QDRANT_URL'))
-    qdrant_api_key: str | None = Field(default_factory=lambda: os.getenv('QDRANT_API_KEY'))
-    qdrant_collection_name: str = Field(default_factory=lambda: os.getenv('QDRANT_COLLECTION', 'investment_advisory_cache'))
-    semantic_cache_enabled: bool = Field(default_factory=lambda: os.getenv('SEMANTIC_CACHE_ENABLED', 'true').lower() in ('true', '1', 'yes'))
-    semantic_cache_threshold: float = Field(default_factory=lambda: float(os.getenv('SEMANTIC_CACHE_THRESHOLD', '0.92')))
+    qdrant_url: str | None = Field(default_factory=lambda: _get_config('QDRANT_URL'))
+    qdrant_api_key: str | None = Field(default_factory=lambda: _get_config('QDRANT_API_KEY'))
+    qdrant_collection_name: str = Field(default_factory=lambda: _get_config('QDRANT_COLLECTION', 'investment_advisory_cache'))
+    semantic_cache_enabled: bool = Field(default_factory=lambda: str(_get_config('SEMANTIC_CACHE_ENABLED', 'true')).lower() in ('true', '1', 'yes'))
+    semantic_cache_threshold: float = Field(default_factory=lambda: float(_get_config('SEMANTIC_CACHE_THRESHOLD', 0.92)))
 
 
 @lru_cache

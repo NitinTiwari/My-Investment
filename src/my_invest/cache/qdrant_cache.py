@@ -1,5 +1,5 @@
 """
-Semantic Caching Engine powered by Qdrant (Cloud or Local Embedded) and FastEmbed.
+Semantic Caching Engine powered by Qdrant Cloud and FastEmbed.
 Matches incoming investment prompts against pre-computed advisory blueprints using
 cosine similarity embeddings, completely eliminating redundant Groq LLM inferences.
 """
@@ -7,7 +7,6 @@ from dataclasses import dataclass
 from functools import lru_cache
 import logging
 import os
-from pathlib import Path
 from threading import Lock
 import time
 from typing import Any, Dict, List, Optional
@@ -34,8 +33,7 @@ class SemanticCacheMatch:
 class QdrantSemanticCache:
     """
     Tier-2 Semantic Cache using Qdrant Vector Database.
-    Connects to Qdrant Cloud when QDRANT_URL and QDRANT_API_KEY are configured,
-    with automatic graceful fallback to local embedded on-disk storage.
+    Connects to live Qdrant Cloud cluster when QDRANT_URL and QDRANT_API_KEY are configured.
     """
 
     def __init__(
@@ -69,28 +67,31 @@ class QdrantSemanticCache:
 
     def _initialize_client(self) -> None:
         try:
-            if self.url and self.api_key:
-                logger.info(f"Connecting to Qdrant Cloud at {self.url}...")
+            if self.url == ":memory:":
+                logger.info("Connecting to in-memory Qdrant instance (test mode)...")
+                self._client = QdrantClient(":memory:")
+                self._mode = "In-Memory (Test)"
+                self._ensure_collection()
+            elif self.url and self.api_key:
+                logger.info(f"Connecting to live Qdrant Cloud cluster at {self.url}...")
                 self._client = QdrantClient(
                     url=self.url,
                     api_key=self.api_key,
                     timeout=10.0,
                 )
                 self._mode = "Qdrant Cloud"
+                self._ensure_collection()
             else:
-                # Fallback to local on-disk storage
-                storage_dir = Path("./data/qdrant_storage").resolve()
-                storage_dir.mkdir(parents=True, exist_ok=True)
-                logger.info(f"Connecting to local embedded Qdrant storage at {storage_dir}...")
-                self._client = QdrantClient(path=str(storage_dir))
-                self._mode = "Local Embedded (Disk)"
-
-            self._ensure_collection()
+                logger.warning(
+                    "Qdrant Cloud credentials (QDRANT_URL, QDRANT_API_KEY) are not set. "
+                    "Local disk storage is disabled; semantic caching will be inactive until cloud credentials are provided."
+                )
+                self._mode = "Disabled (Missing Cloud Credentials)"
+                self._client = None
         except Exception as e:
-            logger.warning(f"Could not connect to Qdrant ({e}). Falling back to in-memory Qdrant instance.")
-            self._client = QdrantClient(":memory:")
-            self._mode = "In-Memory (Fallback)"
-            self._ensure_collection()
+            logger.error(f"Could not connect to live Qdrant Cloud cluster ({e}). Semantic caching is disabled.")
+            self._client = None
+            self._mode = f"Error: {e}"
 
     def _ensure_collection(self) -> None:
         if not self._client:
@@ -214,7 +215,7 @@ class QdrantSemanticCache:
             "threshold": self.threshold,
             "collection_name": self.collection_name,
             "total_cached_blueprints": points_count,
-            "cloud_url": self.url if self.url else "Local Disk/Memory",
+            "cloud_url": self.url if self.url else "Not Configured",
         }
 
 

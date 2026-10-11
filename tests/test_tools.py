@@ -134,9 +134,9 @@ def test_tool_caching_integration():
 def test_qdrant_semantic_cache():
     from my_invest.cache.qdrant_cache import QdrantSemanticCache
     
-    # Use isolated test collection
+    # Use isolated in-memory test collection (zero disk usage)
     test_cache = QdrantSemanticCache(
-        url=None,
+        url=":memory:",
         api_key=None,
         collection_name="test_pytest_semantic_cache",
         threshold=0.85,
