@@ -33,11 +33,20 @@ def _get_config(key: str, default: Any = None) -> Any:
 class Settings(BaseSettings):
     model_config = SettingsConfigDict(
         extra='ignore',
+        populate_by_name=True,
     )
 
     app_name: str = 'My-Invest: FD & Mutual Fund Advisor'
     groq_api_key: str | None = Field(default_factory=lambda: _get_config('GROQ_API_KEY'))
     model_name: str = Field(default_factory=lambda: _get_config('GROQ_MODEL', 'qwen/qwen3.8-27b'))
+    guard_model_name: str = Field(
+        default_factory=lambda: _get_config('GUARDRAIL_MODEL', 'meta-llama/Llama-Prompt-Guard-2-22M'),
+        alias='guardModelName',
+    )
+
+    @property
+    def guardModelName(self) -> str:
+        return self.guard_model_name
     default_investment_amount: float = 200000.0
     agent_tool_call_limit: int = 8
     max_tokens: int = 900

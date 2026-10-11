@@ -5,6 +5,7 @@ from agno.agent import Agent
 
 from my_invest.agents.advisor_agent import create_investment_advisor_agent
 from my_invest.cache import get_semantic_cache
+from my_invest.guardrails import InputGuardrail, OutputGuardrail
 from my_invest.settings import settings
 
 
@@ -22,6 +23,7 @@ class AdvisoryResult:
     total_tokens: int = 0
     is_cached: bool = False
     similarity_score: float = 0.0
+    is_guarded: bool = False
 
 
 class AdvisorService:
@@ -29,6 +31,8 @@ class AdvisorService:
         self.settings = settings
         self._agent: Agent | None = None
         self._cache = get_semantic_cache()
+        self._input_guardrail = InputGuardrail()
+        self._output_guardrail = OutputGuardrail()
 
     def get_agent(self) -> Agent:
         if self._agent is None:
@@ -41,7 +45,27 @@ class AdvisorService:
 
         started_at = perf_counter()
 
-        # Tier 2: Check Qdrant Semantic Cache first
+        # Step 1: Input Guardrail Validation (Domain Relevance & Prompt Injection)
+        guard_res = self._input_guardrail.validate(prompt)
+        if not guard_res.is_valid:
+            duration_ms = round((perf_counter() - started_at) * 1000, 2)
+            return AdvisoryResult(
+                prompt=prompt,
+                text=guard_res.message,
+                duration_ms=duration_ms,
+                model_name=f"My-Invest Guardrail ({self.settings.guard_model_name})",
+                llm_call_count=0,
+                tool_call_count=0,
+                tools_used=(),
+                input_tokens=0,
+                output_tokens=0,
+                total_tokens=0,
+                is_cached=False,
+                similarity_score=0.0,
+                is_guarded=True,
+            )
+
+        # Step 2: Tier-2 Qdrant Semantic Cache Check
         cached_match = self._cache.lookup(prompt)
         if cached_match is not None:
             duration_ms = round((perf_counter() - started_at) * 1000, 2)
@@ -111,7 +135,11 @@ class AdvisorService:
             output_tokens = getattr(metrics, "output_tokens", 0) or 0
             total_tokens = getattr(metrics, "total_tokens", 0) or (input_tokens + output_tokens)
 
-        # Tier 2: Store generated advisory in Qdrant Semantic Cache
+        # Step 3: Output Guardrail Enforcement (SEBI & DICGC compliance)
+        guarded_output = self._output_guardrail.enforce(text, prompt=prompt)
+        text = guarded_output.text
+
+        # Step 4: Tier-2 Store generated advisory in Qdrant Semantic Cache
         self._cache.store(
             prompt=prompt,
             text=text,

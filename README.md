@@ -72,7 +72,14 @@ Given any natural-language investment goal (e.g., *"I want to invest 2 lacs inr 
 9. **Qdrant Vector Database Semantic Caching (Tier 2)**
    - Integrates **Qdrant Cloud** vector database with **FastEmbed** (`BAAI/bge-small-en-v1.5`, 384-dim embeddings) to cache full advisory blueprints for semantically equivalent queries.
    - Cosine similarity matching (default threshold $\ge 0.92$): Rephrased prompts with the same investment goal are returned immediately in **< 50ms**, completely consuming **0 LLM calls** and **0 tool calls**.
-   - Automatic graceful fallback to embedded local disk storage (`./data/qdrant_storage`) if cloud credentials are not supplied.
+   - Direct connection to live Qdrant Cloud cluster with seamless configuration support for both local `.env` and Streamlit Community Cloud (`st.secrets`).
+
+10. **Autonomous LLM-as-a-Judge & Production Guardrails**
+    - **LLM-as-a-Judge (Semantic Intent & Security)**: Uses a dedicated, ultra-fast model (Qwen / Llama) operating in structured JSON mode (`temperature=0.0`) to semantically evaluate whether prompts belong to Indian wealth planning or represent off-topic requests / jailbreaks.
+    - **Constructive Intent Explanations**: When rejecting queries (e.g. *"what is time now?"*, cricket scores, game coding), it extracts the exact reasoning (e.g. *"The prompt asks for current time, which is off-topic..."*) and steers the user with contextual Indian investment examples.
+    - **Zero Cache Pollution**: Rejections bypass agent execution entirely, consuming **0 Groq advisor tokens**, **0 tool hops**, and writing **zero unwanted points to Qdrant Cloud**.
+    - **Output Guardrails (Compliance & Safety)**: Automatically audits outputs to enforce mandatory **SEBI market risk notices** and **DICGC deposit insurance rules**, while sanitizing unrealistic return guarantees on market-linked assets.
+    - **Deterministic Safety Net Fallback**: If the judge model is ever unreachable, the engine gracefully falls back to deterministic rule-based checks with zero application downtime.
 
 ---
 
@@ -82,7 +89,7 @@ Given any natural-language investment goal (e.g., *"I want to invest 2 lacs inr 
 |---|---|---|
 | **Agentic Framework** | [Agno](https://github.com/agno-agi/agno) (v3.0+) | Multi-tool autonomous agent orchestration and tool execution runtime |
 | **LLM Inference** | [Groq](https://groq.com/) (`qwen/qwen3.8-27b`) | Ultra-fast LLM inference for real-time prompt analysis and advisory generation |
-| **Vector Database** | [Qdrant](https://qdrant.tech/) Cloud & Embedded | Semantic advisory caching via cosine similarity embeddings |
+| **Vector Database** | [Qdrant](https://qdrant.tech/) Cloud | Semantic advisory caching via cosine similarity embeddings |
 | **Embedding Engine** | [FastEmbed](https://github.com/qdrant/fastembed) (`bge-small-en-v1.5`) | Ultra-fast ONNX-based local query embedding generation (384-dim) |
 | **User Interface** | [Streamlit](https://streamlit.io/) (v1.40+) | Interactive multi-tab web application with metrics, live tables, and calculators |
 | **Mutual Fund Data** | [AMFI Open API](https://www.mfapi.in/) | Real-time AMFI search and live NAV resolution (`api.mfapi.in`) |
@@ -269,11 +276,24 @@ python main.py
 ```
 *Type your investment query directly into the interactive terminal prompt.*
 
+#### Option C: Inspect & Query Qdrant Cloud Vectors
+Inspect and verify cached embeddings, similarity scores, and prompts directly in your live Qdrant Cloud cluster:
+```bash
+# View collection health & total cached blueprints
+python inspect_qdrant.py --stats
+
+# List all stored prompts and payloads
+python inspect_qdrant.py --list --limit 10
+
+# Test a semantic similarity query against your cloud collection
+python inspect_qdrant.py --query "I want to invest 2 lacs in bank FD and mutual funds for 3 years"
+```
+
 ---
 
 ## Configuration & Environment Variables
 
-All settings are managed via [`pydantic-settings`](https://docs.pydantic.dev/latest/concepts/pydantic_settings/) in `src/my_invest/settings.py`:
+All settings are managed via [`pydantic-settings`](https://docs.pydantic.dev/latest/concepts/pydantic_settings/) in `src/my_invest/settings.py`. On local environments, configurations are read from `.env`. On **Streamlit Community Cloud**, settings are read seamlessly from Streamlit Secrets (`st.secrets`):
 
 | Variable Name | Default Value | Description |
 |---|---|---|
@@ -288,9 +308,18 @@ All settings are managed via [`pydantic-settings`](https://docs.pydantic.dev/lat
 | `QDRANT_COLLECTION` | `investment_advisory_cache` | Name of the Qdrant vector collection for semantic cache |
 | `SEMANTIC_CACHE_ENABLED` | `true` | Enables or disables Tier-2 Qdrant semantic caching |
 | `SEMANTIC_CACHE_THRESHOLD` | `0.92` | Cosine similarity threshold for cache hits (0.85 – 0.98) |
-| `AGENT_TOOL_CALL_LIMIT` | `8` | Maximum tool execution hops per advisory query |
-| `MAX_TOKENS` | `900` | Maximum token limit for LLM generation |
-| `LOG_LEVEL` | `INFO` | Application log verbosity (`DEBUG`, `INFO`, `WARNING`) |
+
+### Streamlit Community Cloud Deployment
+When deploying to Streamlit Cloud, add the following to **App Settings $\rightarrow$ Secrets**:
+```toml
+GROQ_API_KEY = "gsk_..."
+GROQ_MODEL = "qwen/qwen3.8-27b"
+QDRANT_URL = "https://your-cluster.cloud.qdrant.io:6333"
+QDRANT_API_KEY = "your_qdrant_api_key_here"
+QDRANT_COLLECTION = "investment_advisory_cache"
+SEMANTIC_CACHE_ENABLED = "true"
+SEMANTIC_CACHE_THRESHOLD = "0.92"
+```
 
 ---
 

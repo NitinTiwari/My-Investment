@@ -84,7 +84,8 @@ st.caption("AI-Powered Investment & Portfolio Advisor for Indian Bank Fixed Depo
 # Sidebar Configuration
 with st.sidebar:
     st.header("Advisor Settings")
-    st.caption(f"Model: `{settings.model_name}`")
+    st.caption(f"🤖 **Advisor Model**: `{settings.model_name}`")
+    st.caption(f"🛡️ **Guardrail Model**: `{settings.guard_model_name}`")
     st.divider()
 
     st.markdown("**Quick Preset Prompts**")
@@ -174,17 +175,23 @@ with tab_advisor:
                 st.success(
                     f"⚡ **Served by Qdrant Semantic Cache** (Similarity Score: **{res.similarity_score * 100:.1f}%**) — **0 LLM inferences** and **0 tool calls** consumed! Delivered in {res.duration_ms:.0f}ms."
                 )
+            elif getattr(res, "is_guarded", False):
+                guard_label = getattr(res, "model_name", "Input Guardrail")
+                st.warning(
+                    f"🛡️ **Guardrail Active ({guard_label})**: Query filtered or redirected. Handled in {res.duration_ms:.0f}ms with **0 LLM calls** and **0 tool calls**."
+                )
 
             st.markdown(res.text)
 
-            st.divider()
-            st.download_button(
-                "Download Strategy Report (.md)",
-                data=res.text,
-                file_name="my_invest_strategy_report.md",
-                mime="text/markdown",
-                icon=":material/download:",
-            )
+            if not getattr(res, "is_guarded", False):
+                st.divider()
+                st.download_button(
+                    "Download Strategy Report (.md)",
+                    data=res.text,
+                    file_name="my_invest_strategy_report.md",
+                    mime="text/markdown",
+                    icon=":material/download:",
+                )
     else:
         with st.container(border=True):
             st.info("👈 Enter your investment goal above or click **Generate Plan** to receive a tailored portfolio allocation.")
