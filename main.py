@@ -14,7 +14,7 @@ from my_invest.settings import settings
 def main():
     print("=" * 70)
     print("     My-Invest: Indian FD & Mutual Fund Investment Advisor")
-    print(f"     Powered by Groq ({settings.model_name}) & Agno")
+    print(f"     Powered by {settings.active_provider} ({settings.active_model_name}) & Agno")
     print("=" * 70)
     print("Example prompts:")
     print("  - I want to invest 2 lacs inr in Indian bank fixed deposits and in Indian mutual funds")

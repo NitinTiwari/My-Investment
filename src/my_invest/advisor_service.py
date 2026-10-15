@@ -5,6 +5,7 @@ from agno.agent import Agent
 
 from my_invest.agents.advisor_agent import create_investment_advisor_agent
 from my_invest.cache import get_semantic_cache
+from my_invest.gateway import estimate_token_cost
 from my_invest.guardrails import InputGuardrail, OutputGuardrail
 from my_invest.settings import settings
 
@@ -21,25 +22,42 @@ class AdvisoryResult:
     input_tokens: int = 0
     output_tokens: int = 0
     total_tokens: int = 0
+    estimated_cost_usd: float = 0.0
     is_cached: bool = False
     similarity_score: float = 0.0
     is_guarded: bool = False
 
 
 class AdvisorService:
-    def __init__(self) -> None:
+    def __init__(self, temperature: float | None = None, max_tokens: int | None = None) -> None:
         self.settings = settings
+        self.temperature = temperature if temperature is not None else settings.temperature
+        self.max_tokens = max_tokens if max_tokens is not None else settings.max_tokens
         self._agent: Agent | None = None
         self._cache = get_semantic_cache()
         self._input_guardrail = InputGuardrail()
         self._output_guardrail = OutputGuardrail()
 
-    def get_agent(self) -> Agent:
-        if self._agent is None:
-            self._agent = create_investment_advisor_agent()
+    def get_agent(self, temperature: float | None = None, max_tokens: int | None = None) -> Agent:
+        temp = temperature if temperature is not None else self.temperature
+        tokens = max_tokens if max_tokens is not None else self.max_tokens
+        recreate = (
+            self._agent is None
+            or (temperature is not None and temperature != self.temperature)
+            or (max_tokens is not None and max_tokens != self.max_tokens)
+        )
+        if recreate:
+            self.temperature = temp
+            self.max_tokens = tokens
+            self._agent = create_investment_advisor_agent(temperature=temp, max_tokens=tokens)
         return self._agent
 
-    def run_advisory(self, prompt: str) -> AdvisoryResult:
+    def run_advisory(
+        self,
+        prompt: str,
+        temperature: float | None = None,
+        max_tokens: int | None = None,
+    ) -> AdvisoryResult:
         if not prompt or not prompt.strip():
             raise ValueError("Investment prompt cannot be empty.")
 
@@ -84,7 +102,7 @@ class AdvisorService:
                 similarity_score=cached_match.similarity_score,
             )
 
-        agent = self.get_agent()
+        agent = self.get_agent(temperature=temperature, max_tokens=max_tokens)
         response = agent.run(prompt)
 
         text = getattr(response, "content", None)
@@ -135,6 +153,8 @@ class AdvisorService:
             output_tokens = getattr(metrics, "output_tokens", 0) or 0
             total_tokens = getattr(metrics, "total_tokens", 0) or (input_tokens + output_tokens)
 
+        cost_usd = estimate_token_cost(self.settings.active_model_name, input_tokens, output_tokens)
+
         # Step 3: Output Guardrail Enforcement (SEBI & DICGC compliance)
         guarded_output = self._output_guardrail.enforce(text, prompt=prompt)
         text = guarded_output.text
@@ -144,19 +164,20 @@ class AdvisorService:
             prompt=prompt,
             text=text,
             tools_used=tuple(tools_list),
-            model_name=self.settings.model_name,
+            model_name=self.settings.active_model_name,
         )
 
         return AdvisoryResult(
             prompt=prompt,
             text=text,
             duration_ms=duration_ms,
-            model_name=self.settings.model_name,
+            model_name=self.settings.active_model_name,
             llm_call_count=llm_call_count,
             tool_call_count=tool_call_count,
             tools_used=tuple(tools_list),
             input_tokens=input_tokens,
             output_tokens=output_tokens,
             total_tokens=total_tokens,
+            estimated_cost_usd=cost_usd,
             is_cached=False,
         )

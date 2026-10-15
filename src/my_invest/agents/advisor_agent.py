@@ -1,5 +1,6 @@
 from agno.agent import Agent
 from agno.models.groq import Groq
+from agno.models.openrouter import OpenRouter
 from agno.tools.duckduckgo import DuckDuckGoTools
 from agno.tools.yfinance import YFinanceTools
 
@@ -18,12 +19,44 @@ from my_invest.tools.mutual_fund_tool import (
 )
 
 
-def create_investment_advisor_agent() -> Agent:
+def create_investment_advisor_agent(
+    temperature: float | None = None,
+    max_tokens: int | None = None,
+) -> Agent:
     """
     Builds the flagship Investment Advisor Agent with tools for Bank FD rates,
     Indian Mutual Funds (AMFI live NAVs), ETF pricing, and financial math calculators.
+    Uses OpenRouter LLM Gateway if configured, with direct Groq fallback.
     """
-    model = Groq(id=settings.model_name, api_key=settings.groq_api_key, max_tokens=settings.max_tokens)
+    temp = temperature if temperature is not None else settings.temperature
+    tokens = max_tokens if max_tokens is not None else settings.max_tokens
+
+    if settings.gateway_enabled:
+        primary_model = settings.llm_gateway_model
+        fallback_models = list(dict.fromkeys([
+            primary_model,
+            "qwen/qwen3.8-27b",
+            "nvidia/nemotron-3-super-120b-a12b:free",
+        ]))[:3]
+        model = OpenRouter(
+            id=primary_model,
+            models=fallback_models,
+            api_key=settings.llm_gateway_api_key,
+            base_url=settings.llm_gateway_url,
+            max_tokens=tokens,
+            temperature=temp,
+            default_headers={
+                "HTTP-Referer": "https://github.com/my-invest",
+                "X-Title": "My-Invest Financial Advisor",
+            },
+        )
+    else:
+        model = Groq(
+            id=settings.model_name,
+            api_key=settings.groq_api_key,
+            max_tokens=tokens,
+            temperature=temp,
+        )
 
     advisor_agent = Agent(
         model=model,
@@ -63,6 +96,7 @@ def create_investment_advisor_agent() -> Agent:
             "     * **Executive Summary & Recommended Allocation Plan** (Table with Asset Class, Amount in ₹, Percentage, Target Tenure, Expected Return %)",
             "     * **Part A: Bank Fixed Deposit (FD) Strategy** (Specific banks with tenure, interest rate, senior citizen rates, DICGC insurance ₹5L rule, and calculated maturity value)",
             "     * **Part B: Indian Mutual Fund Strategy** (Specific fund recommendations with category, scheme code, live NAV, rationale, and 3-5 yr projected growth)",
+            "     * **Part A and part B both should be output If user asks for both FD and MF. If user asks for only FD or only MF then output only that part.",
             "     * **Taxation & Liquidity Considerations** (FD interest slab tax vs Equity MF LTCG @ 12.5% above ₹1.25L; premature withdrawal rules)",
             "     * **Actionable Next Steps** (Step-by-step how to execute via net banking or direct MF portals)",
             "",

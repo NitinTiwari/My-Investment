@@ -144,3 +144,38 @@ def test_advisor_service_end_to_end_guardrail():
     assert result.tool_call_count == 0
     assert "My-Invest" in result.text
     assert "Bank Fixed Deposits" in result.text
+
+
+def test_llm_gateway_settings_and_agent():
+    from my_invest.settings import settings
+    from my_invest.agents.advisor_agent import create_investment_advisor_agent
+
+    # Validate gateway properties
+    assert settings.llm_gateway_url.startswith("http")
+    assert settings.gateway_enabled is True
+    assert settings.active_provider == "OpenRouter Gateway"
+    assert "qwen" in settings.active_model_name
+    assert settings.temperature == 0.2
+
+    # Validate agent creation with OpenRouter model and temperature
+    agent = create_investment_advisor_agent(temperature=0.15, max_tokens=1200)
+    assert agent is not None
+    assert agent.model is not None
+    assert agent.model.provider == "OpenRouter"
+    assert agent.model.temperature == 0.15
+    assert agent.model.max_tokens == 1200
+
+
+def test_openrouter_telemetry_and_cost():
+    from my_invest.gateway import estimate_token_cost, get_openrouter_account_info
+
+    # Test cost estimator
+    cost = estimate_token_cost("qwen/qwen3.6-27b", 1000, 500)
+    assert cost > 0.0
+    free_cost = estimate_token_cost("nvidia/nemotron-3-super-120b-a12b:free", 1000, 500)
+    assert free_cost == 0.0
+
+    # Test account info loader
+    info = get_openrouter_account_info()
+    assert info is not None
+    assert isinstance(info.usage_usd, float)

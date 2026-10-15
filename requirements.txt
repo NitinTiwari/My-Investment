@@ -1,6 +1,6 @@
 agno>=3.0.10
 ddgs>=9.16.0
-dotenv>=0.9.9
+python-dotenv>=1.0.0
 groq<1.0.0
 pydantic>=2.13.5
 pydantic-settings>=2.0.0
@@ -11,3 +11,4 @@ yfinance>=1.7.0
 pandas>=2.0.0
 qdrant-client>=1.19.0
 fastembed>=0.9.0
+openai>=1.40.0

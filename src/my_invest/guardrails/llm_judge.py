@@ -52,14 +52,14 @@ class LLMJudge:
         model_name: Optional[str] = None,
         threshold: float = 0.5,
     ) -> None:
-        self.api_key = api_key or settings.groq_api_key or os.getenv("GROQ_API_KEY")
-        # Support guard_model_name, guardModelName, GUARDRAIL_MODEL env, or default model_name
+        self.api_key = api_key or (settings.llm_gateway_api_key if settings.gateway_enabled else settings.groq_api_key) or os.getenv("GROQ_API_KEY")
+        # Support guard_model_name, guardModelName, GUARDRAIL_MODEL env, or active gateway/groq model
         self.model_name = (
             model_name
             or os.getenv("GUARDRAIL_MODEL")
             or getattr(settings, "guard_model_name", None)
             or getattr(settings, "guardModelName", None)
-            or settings.model_name
+            or settings.active_model_name
         )
         env_threshold = os.getenv("GUARDRAIL_THRESHOLD")
         self.threshold = float(env_threshold) if env_threshold else threshold
@@ -73,12 +73,38 @@ class LLMJudge:
         return any(k in m_lower for k in ("prompt-guard", "prompt_guard", "promptguard", "safeguard"))
 
     def _get_client(self):
-        if self._client is None and self.api_key:
-            try:
-                from groq import Groq
-                self._client = Groq(api_key=self.api_key)
-            except Exception as e:
-                logger.warning(f"Could not initialize Groq client for LLM judge: {e}")
+        if self._client is None:
+            # 1. Specialized Prompt Guard classifier requires Groq API
+            if self.is_prompt_guard:
+                groq_key = settings.groq_api_key or os.getenv("GROQ_API_KEY") or self.api_key
+                if groq_key:
+                    try:
+                        from groq import Groq
+                        self._client = Groq(api_key=groq_key)
+                    except Exception as e:
+                        logger.warning(f"Could not initialize Groq client for Prompt Guard: {e}")
+                return self._client
+
+            # 2. Generative Judge: Prefer OpenRouter Gateway if configured
+            if settings.gateway_enabled:
+                try:
+                    from openai import OpenAI
+                    self._client = OpenAI(
+                        base_url=settings.llm_gateway_url,
+                        api_key=settings.llm_gateway_api_key,
+                    )
+                    return self._client
+                except Exception as e:
+                    logger.warning(f"Could not initialize OpenRouter client for LLM judge: {e}")
+
+            # 3. Direct Groq fallback
+            groq_key = self.api_key or settings.groq_api_key or os.getenv("GROQ_API_KEY")
+            if groq_key:
+                try:
+                    from groq import Groq
+                    self._client = Groq(api_key=groq_key)
+                except Exception as e:
+                    logger.warning(f"Could not initialize Groq client for LLM judge: {e}")
         return self._client
 
     def _check_domain_relevance(self, prompt: str) -> Tuple[bool, str]:
@@ -162,9 +188,9 @@ class LLMJudge:
                         {"role": "user", "content": prompt.strip()},
                     ],
                     temperature=0.0,
-                    max_tokens=70,
+                    max_tokens=250,
                     response_format={"type": "json_object"},
-                    timeout=5.0,
+                    timeout=8.0,
                 )
             except Exception as e:
                 err_str = str(e)
@@ -183,13 +209,16 @@ class LLMJudge:
                             {"role": "user", "content": prompt.strip()},
                         ],
                         temperature=0.0,
-                        max_tokens=70,
-                        timeout=5.0,
+                        max_tokens=250,
+                        timeout=8.0,
                     )
                 else:
                     raise
 
-            content = response.choices[0].message.content
+            msg = response.choices[0].message
+            content = msg.content
+            if not content:
+                content = getattr(msg, "reasoning_content", None) or getattr(msg, "reasoning", None)
             if not content:
                 return None
 

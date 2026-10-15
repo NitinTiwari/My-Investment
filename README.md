@@ -2,7 +2,8 @@
 
 [![Python](https://img.shields.io/badge/Python-3.11%2B-blue.svg)](https://www.python.org/)
 [![Framework](https://img.shields.io/badge/Agentic_AI-Agno-8A2BE2.svg)](https://github.com/agno-agi/agno)
-[![Inference](https://img.shields.io/badge/LLM_Inference-Groq-orange.svg)](https://groq.com/)
+[![LLM_Gateway](https://img.shields.io/badge/LLM_Gateway-OpenRouter-6366F1.svg)](https://openrouter.ai/)
+[![Inference](https://img.shields.io/badge/LLM_Fallback-Groq-orange.svg)](https://groq.com/)
 [![Web_UI](https://img.shields.io/badge/UI-Streamlit-red.svg)](https://streamlit.io/)
 [![Market_Data](https://img.shields.io/badge/MF_Data-AMFI_Direct_API-green.svg)](https://www.mfapi.in/)
 
@@ -59,25 +60,30 @@ Given any natural-language investment goal (e.g., *"I want to invest 2 lacs inr 
    - Compares FD interest taxation (taxed at investor's marginal income tax slab rate, Section 80TTB deduction for seniors) against Mutual Fund taxation (Equity LTCG @ 12.5% on gains exceeding ₹1.25 Lakh; Debt MF taxed at slab rates).
 
 7. **Real-Time LLM & Tool Execution Telemetry**
-   - Live user-facing telemetry cards at the bottom of the dashboard tracking LLM inference counts, model identifier, tokens processed, latency, and tools executed per query.
+   - Live user-facing telemetry cards at the bottom of the dashboard tracking LLM inference counts, active gateway provider and model identifier, tokens processed, latency, and tools executed per query.
    - Interactive badge display of all tools executed (e.g. `get_indian_bank_fd_rates`, `search_indian_mutual_funds`, `calculate_fd_maturity`) plus an audit history log of all queries run in the session.
 
-8. **High-Performance Tier-1 TTL Tool Caching**
+8. **Unified LLM Gateway Architecture (OpenRouter Tier 1)**
+   - Integrates **OpenRouter API Gateway** (`https://openrouter.ai/api/v1`) as the centralized LLM gateway layer.
+   - Provides out-of-the-box access to top free high-parameter models (e.g., `nvidia/nemotron-3-super-120b-a12b:free`, `nvidia/nemotron-3.5-lightning:free`).
+   - Built-in multi-model fallback chain: If the primary model experiences provider rate limits, requests automatically route to secondary fallback models or direct **Groq** inference.
+
+9. **High-Performance Tier-1 TTL Tool Caching**
    - Built-in thread-safe TTL & LRU caching layer across financial tools to eliminate 90%+ of redundant network roundtrips.
    - Bank FD benchmarks & DuckDuckGo searches: cached for 24 hours.
    - AMFI NAV lookups: cached for 12 hours (reflecting AMFI's daily NAV publishing schedule).
    - AMFI fund searches: cached for 24 hours.
    - Cached calls resolve in **< 1ms** with live hit/miss metrics visible in the telemetry panel.
 
-9. **Qdrant Vector Database Semantic Caching (Tier 2)**
+10. **Qdrant Vector Database Semantic Caching (Tier 2)**
    - Integrates **Qdrant Cloud** vector database with **FastEmbed** (`BAAI/bge-small-en-v1.5`, 384-dim embeddings) to cache full advisory blueprints for semantically equivalent queries.
    - Cosine similarity matching (default threshold $\ge 0.92$): Rephrased prompts with the same investment goal are returned immediately in **< 50ms**, completely consuming **0 LLM calls** and **0 tool calls**.
    - Direct connection to live Qdrant Cloud cluster with seamless configuration support for both local `.env` and Streamlit Community Cloud (`st.secrets`).
 
-10. **Autonomous LLM-as-a-Judge & Production Guardrails**
-    - **LLM-as-a-Judge (Semantic Intent & Security)**: Uses a dedicated, ultra-fast model (Qwen / Llama) operating in structured JSON mode (`temperature=0.0`) to semantically evaluate whether prompts belong to Indian wealth planning or represent off-topic requests / jailbreaks.
-    - **Constructive Intent Explanations**: When rejecting queries (e.g. *"what is time now?"*, cricket scores, game coding), it extracts the exact reasoning (e.g. *"The prompt asks for current time, which is off-topic..."*) and steers the user with contextual Indian investment examples.
-    - **Zero Cache Pollution**: Rejections bypass agent execution entirely, consuming **0 Groq advisor tokens**, **0 tool hops**, and writing **zero unwanted points to Qdrant Cloud**.
+11. **Autonomous LLM-as-a-Judge & Production Guardrails**
+    - **LLM-as-a-Judge (Semantic Intent & Security)**: Uses a dedicated model operating in structured JSON mode (`temperature=0.0`) or Prompt Guard classifier to semantically evaluate whether prompts belong to Indian wealth planning or represent off-topic requests / jailbreaks.
+    - **Constructive Intent Explanations**: When rejecting queries (e.g. *"what is time now?"*, cricket scores, game coding), it extracts the exact reasoning and steers the user with contextual Indian investment examples.
+    - **Zero Cache Pollution**: Rejections bypass agent execution entirely, consuming **0 advisor tokens**, **0 tool hops**, and writing **zero unwanted points to Qdrant Cloud**.
     - **Output Guardrails (Compliance & Safety)**: Automatically audits outputs to enforce mandatory **SEBI market risk notices** and **DICGC deposit insurance rules**, while sanitizing unrealistic return guarantees on market-linked assets.
     - **Deterministic Safety Net Fallback**: If the judge model is ever unreachable, the engine gracefully falls back to deterministic rule-based checks with zero application downtime.
 
@@ -88,8 +94,9 @@ Given any natural-language investment goal (e.g., *"I want to invest 2 lacs inr 
 | Layer | Technology | Purpose |
 |---|---|---|
 | **Agentic Framework** | [Agno](https://github.com/agno-agi/agno) (v3.0+) | Multi-tool autonomous agent orchestration and tool execution runtime |
-| **LLM Inference** | [Groq](https://groq.com/) (`qwen/qwen3.8-27b`) | Ultra-fast LLM inference for real-time prompt analysis and advisory generation |
-| **Vector Database** | [Qdrant](https://qdrant.tech/) Cloud | Semantic advisory caching via cosine similarity embeddings |
+| **LLM Gateway (Tier 1)** | [OpenRouter](https://openrouter.ai/) (`https://openrouter.ai/api/v1`) | Unified OpenAI-compatible gateway with multi-model routing & free models |
+| **Direct LLM Fallback** | [Groq](https://groq.com/) (`qwen/qwen3.8-27b`) | Direct ultra-fast inference and specialized Prompt Guard classification |
+| **Vector Database (Tier 2)** | [Qdrant](https://qdrant.tech/) Cloud | Semantic advisory caching via cosine similarity embeddings |
 | **Embedding Engine** | [FastEmbed](https://github.com/qdrant/fastembed) (`bge-small-en-v1.5`) | Ultra-fast ONNX-based local query embedding generation (384-dim) |
 | **User Interface** | [Streamlit](https://streamlit.io/) (v1.40+) | Interactive multi-tab web application with metrics, live tables, and calculators |
 | **Mutual Fund Data** | [AMFI Open API](https://www.mfapi.in/) | Real-time AMFI search and live NAV resolution (`api.mfapi.in`) |
@@ -111,11 +118,24 @@ flowchart TD
     Streamlit --> AdvisorService[AdvisorService]
     CLI --> AdvisorService
 
-    AdvisorService --> AgnoAgent[Agno Agent Engine]
-    AgnoAgent --> Groq[Groq API: qwen/qwen3.8-27b]
+    subgraph Security & Caching Layer
+        AdvisorService --> GuardrailCheck{Input Guardrail / LLM Judge}
+        GuardrailCheck -->|Safe & Financial| SemanticCacheCheck{Qdrant Semantic Cache}
+        GuardrailCheck -->|Blocked / Off-Topic| RejectionResp[Constructive Intent Feedback]
+        SemanticCacheCheck -->|Cache Hit >= 0.92| CachedResp[Instant Cached Response <50ms]
+    end
+
+    SemanticCacheCheck -->|Cache Miss| AgnoAgent[Agno Agent Engine]
+
+    subgraph LLM Gateway Layer
+        AgnoAgent --> LLMGateway{LLM Gateway Router}
+        LLMGateway -->|Primary Gateway| OpenRouter[OpenRouter API: nemotron / free models]
+        LLMGateway -->|Fallback| Groq[Groq API: qwen/qwen3.8-27b]
+    end
 
     subgraph Tool Execution Loop
-        Groq -->|Invokes| ToolDispatcher{Tool Dispatcher}
+        OpenRouter -->|Invokes| ToolDispatcher{Tool Dispatcher}
+        Groq -->|Invokes| ToolDispatcher
         ToolDispatcher -->|FD Rates & Tenures| BankTool[get_indian_bank_fd_rates]
         ToolDispatcher -->|Search Schemes| MFSearch[search_indian_mutual_funds]
         ToolDispatcher -->|Fetch Live NAV| MFNav[get_mutual_fund_nav]
@@ -127,11 +147,12 @@ flowchart TD
         ToolDispatcher -->|Web Updates| DDG[DuckDuckGo Search]
     end
 
-    ToolDispatcher --> ExternalAPIs[(External APIs: AMFI api.mfapi.in / Yahoo Finance / DuckDuckGo)]
-    ToolExecutionResults[Tool Results & Projections] --> AgnoAgent
-    AgnoAgent --> Groq
-    Groq --> FinalReport[Structured Advisory Report]
-    FinalReport --> UIOutput[Render Markdown Tables, Metrics & Strategy]
+    ToolDispatcher --> ExternalAPIs[(External APIs: AMFI / Yahoo Finance / DuckDuckGo)]
+    ToolDispatcher --> AgnoAgent
+    AgnoAgent --> FinalReport[Structured Advisory Report]
+    FinalReport --> OutputGuardrail[Output Guardrail: SEBI & DICGC Compliance]
+    OutputGuardrail --> QdrantStore[(Store in Qdrant Vector Cache)]
+    OutputGuardrail --> UIOutput[Render Markdown Tables, Metrics & Strategy]
 ```
 
 ---
@@ -229,7 +250,7 @@ My-Invest/
 
 ### 1. Prerequisites
 - **Python 3.11+** installed on your system.
-- A free **Groq Cloud API Key** (obtainable from [Groq Console](https://console.groq.com/keys)).
+- An **OpenRouter API Key** (free from [openrouter.ai](https://openrouter.ai/keys)) or a **Groq Cloud API Key** (from [Groq Console](https://console.groq.com/keys)).
 
 ### 2. Clone and Setup Environment
 ```bash
@@ -252,10 +273,22 @@ pip install -r requirements.txt
 ### 3. Configure API Key
 Create a `.env` file in the project root:
 ```env
+# Tier 1: LLM Gateway Configuration (OpenRouter)
+LLM_GATEWAY_URL=https://openrouter.ai/api/v1
+LLM_GATEWAY_API_KEY=sk-or-v1-your_openrouter_api_key_here
+LLM_GATEWAY_MODEL=qwen/qwen3.6-27b
+
+# Direct Groq LLM Configuration (Fallback / Dedicated Guardrail)
 GROQ_API_KEY=gsk_your_actual_groq_api_key_here
 GROQ_MODEL=qwen/qwen3.8-27b
-AGENT_TOOL_CALL_LIMIT=8
-MAX_TOKENS=900
+GUARDRAIL_MODEL=meta-llama/Llama-Prompt-Guard-2-22M
+
+# Tier 2: Qdrant Cloud Vector Database Configuration (Semantic Caching)
+QDRANT_URL=https://your-cluster-id.region.gcp.cloud.qdrant.io:6333
+QDRANT_API_KEY=your_qdrant_api_key_here
+QDRANT_COLLECTION=investment_advisory_cache
+SEMANTIC_CACHE_ENABLED=true
+SEMANTIC_CACHE_THRESHOLD=0.92
 ```
 
 ### 4. Running the Applications
@@ -297,11 +330,16 @@ All settings are managed via [`pydantic-settings`](https://docs.pydantic.dev/lat
 
 | Variable Name | Default Value | Description |
 |---|---|---|
-| `GROQ_API_KEY` | *None (Required)* | Groq Cloud API authentication key |
-| `GROQ_MODEL` | `qwen/qwen3.8-27b` | LLM model identifier (supports `llama-3.3-70b-versatile`, etc.) |
+| `LLM_GATEWAY_URL` | `https://openrouter.ai/api/v1` | OpenRouter or OpenAI-compatible LLM Gateway endpoint |
+| `LLM_GATEWAY_API_KEY` | *None* | OpenRouter Gateway API authentication key (`sk-or-v1-...`) |
+| `LLM_GATEWAY_MODEL` | `qwen/qwen3.6-27b` | Primary model identifier on gateway (e.g. `qwen/qwen3.6-27b`) |
+| `LLM_TEMPERATURE` | `0.2` | Model sampling temperature (0.0 - 1.0; 0.1-0.3 recommended for factual finance) |
+| `GROQ_API_KEY` | *None* | Groq Cloud API authentication key (fallback inference & prompt-guard) |
+| `GROQ_MODEL` | `qwen/qwen3.8-27b` | Direct Groq LLM model identifier |
+| `GUARDRAIL_MODEL` | `meta-llama/Llama-Prompt-Guard-2-22M` | Dedicated security classifier model for prompt injection & jailbreak |
 | `DEFAULT_INVESTMENT_AMOUNT` | `200000.0` | Default seed corpus amount in INR (₹2,00,000) |
 | `AGENT_TOOL_CALL_LIMIT` | `8` | Maximum tool execution hops per advisory query |
-| `MAX_TOKENS` | `900` | Maximum token limit for LLM generation |
+| `MAX_TOKENS` | `1500` | Maximum token limit for LLM generation |
 | `LOG_LEVEL` | `INFO` | Application log verbosity (`DEBUG`, `INFO`, `WARNING`) |
 | `QDRANT_URL` | *None (Cloud URL)* | Qdrant Cloud cluster endpoint URL (e.g. `https://xyz.cloud.qdrant.io:6333`) |
 | `QDRANT_API_KEY` | *None* | Qdrant Cloud authentication API key |
@@ -312,8 +350,15 @@ All settings are managed via [`pydantic-settings`](https://docs.pydantic.dev/lat
 ### Streamlit Community Cloud Deployment
 When deploying to Streamlit Cloud, add the following to **App Settings $\rightarrow$ Secrets**:
 ```toml
+LLM_GATEWAY_URL = "https://openrouter.ai/api/v1"
+LLM_GATEWAY_API_KEY = "sk-or-v1-..."
+LLM_GATEWAY_MODEL = "qwen/qwen3.6-27b"
+LLM_TEMPERATURE = 0.2
+
 GROQ_API_KEY = "gsk_..."
 GROQ_MODEL = "qwen/qwen3.8-27b"
+GUARDRAIL_MODEL = "meta-llama/Llama-Prompt-Guard-2-22M"
+
 QDRANT_URL = "https://your-cluster.cloud.qdrant.io:6333"
 QDRANT_API_KEY = "your_qdrant_api_key_here"
 QDRANT_COLLECTION = "investment_advisory_cache"

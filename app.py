@@ -18,6 +18,7 @@ except Exception:
 
 from my_invest.advisor_service import AdvisorService, AdvisoryResult
 from my_invest.cache import get_semantic_cache
+from my_invest.gateway import get_openrouter_account_info
 from my_invest.settings import settings
 from my_invest.tools.bank_fd_tool import BENCHMARK_FD_RATES, get_indian_bank_fd_rates
 from my_invest.tools.cache import get_aggregated_cache_summary
@@ -76,6 +77,8 @@ if "session_tool_count" not in st.session_state:
     st.session_state.session_tool_count = 0
 if "session_total_tokens" not in st.session_state:
     st.session_state.session_total_tokens = 0
+if "session_total_cost_usd" not in st.session_state:
+    st.session_state.session_total_cost_usd = 0.0
 
 # Header
 st.title("My-Invest :material/account_balance:")
@@ -99,6 +102,42 @@ with st.sidebar:
 
     st.divider()
     st.info("💡 **Tip**: All recommendations prioritize **Direct Plans** (0% distributor commission) and highlight **DICGC insurance (up to ₹5 Lakhs)** on bank deposits.")
+
+    st.divider()
+    # LLM Gateway Sidebar Panel
+    st.markdown("**🌐 LLM Gateway (Tier 1)**")
+    gateway_icon = "🟢" if settings.gateway_enabled else "🔵"
+    st.caption(f"{gateway_icon} **Provider**: `{settings.active_provider}`")
+    st.caption(f"🧠 **Model**: `{settings.active_model_name}`")
+
+    if settings.gateway_enabled:
+        acct_info = get_openrouter_account_info()
+        if acct_info.success:
+            tier_badge = "🆓 Free Tier" if acct_info.is_free_tier else "💳 Paid Tier"
+            st.caption(f"🏷️ **Account**: `{tier_badge}`")
+            st.caption(f"💰 **Total Spend**: `${acct_info.usage_usd:.4f}`")
+            limit_str = f"${acct_info.limit_usd:.2f}" if acct_info.limit_usd is not None else "Unlimited"
+            st.caption(f"🛑 **Budget Limit**: `{limit_str}`")
+            if acct_info.free_requests_limit > 0:
+                st.caption(f"📊 **Free Quota**: `{acct_info.free_requests_used}/{acct_info.free_requests_limit} today`")
+
+    st.markdown("**⚙️ Token & Model Controls**")
+    selected_max_tokens = st.slider(
+        "🛑 Max Output Tokens",
+        min_value=400,
+        max_value=3000,
+        value=int(settings.max_tokens),
+        step=100,
+        help="Caps maximum response tokens per query to control costs and prevent runaway generations.",
+    )
+    selected_temperature = st.slider(
+        "🌡️ Temperature",
+        min_value=0.0,
+        max_value=1.0,
+        value=float(settings.temperature),
+        step=0.05,
+        help="Lower values (0.1 - 0.3) provide more precise, factual financial advice. Higher values increase variability.",
+    )
 
     st.divider()
     # Qdrant Semantic Cache Sidebar Panel
@@ -142,11 +181,16 @@ with tab_advisor:
                 st.write("🔍 Tracking latest public, private, and small finance bank FD rates...")
                 st.write("📊 Querying AMFI database for direct growth mutual funds & NAVs...")
                 st.write("🧮 Calculating compound maturity and tax projections...")
-                result = service.run_advisory(user_prompt)
+                result = service.run_advisory(
+                    user_prompt,
+                    temperature=selected_temperature,
+                    max_tokens=selected_max_tokens,
+                )
                 st.session_state.advisory_result = result
                 st.session_state.session_llm_count += result.llm_call_count
                 st.session_state.session_tool_count += result.tool_call_count
                 st.session_state.session_total_tokens += result.total_tokens
+                st.session_state.session_total_cost_usd += getattr(result, "estimated_cost_usd", 0.0)
                 st.session_state.query_history.append({
                     "prompt": user_prompt,
                     "duration_s": result.duration_ms / 1000,
@@ -154,6 +198,7 @@ with tab_advisor:
                     "tool_count": result.tool_call_count,
                     "tools_used": list(result.tools_used),
                     "tokens": result.total_tokens,
+                    "cost_usd": getattr(result, "estimated_cost_usd", 0.0),
                     "model": result.model_name,
                 })
                 status.update(label="Investment plan ready!", state="complete", expanded=False)
@@ -276,7 +321,7 @@ with tab_calculator:
 # ----------------- TELEMETRY & USAGE DASHBOARD (BOTTOM OF PAGE) -----------------
 st.divider()
 st.subheader("⚡ Live AI & Tool Execution Telemetry")
-st.caption("Real-time counter and audit log of Groq LLM inferences and financial tools executed per query.")
+st.caption(f"Real-time counter and audit log of {settings.active_provider} inferences and financial tools executed per query.")
 
 current_res: AdvisoryResult | None = st.session_state.advisory_result
 if current_res:
@@ -304,26 +349,26 @@ if current_res:
             unsafe_allow_html=True,
         )
     with t_col3:
-        token_info = f"{current_res.total_tokens:,} tokens" if current_res.total_tokens > 0 else f"{current_res.duration_ms / 1000:.2f}s"
-        token_sub = "Prompt + Output" if current_res.total_tokens > 0 else "Inference latency"
+        cost_str = f"~${current_res.estimated_cost_usd:.5f}" if current_res.estimated_cost_usd > 0 else "Free / $0.00"
         st.markdown(
             f"""
             <div class="metric-card">
-                <div class="metric-title">⏱️ Latency & Throughput</div>
-                <div class="metric-value">{current_res.duration_ms / 1000:.1f}s</div>
-                <div style="font-size: 0.8rem; color: #94a3b8; margin-top: 4px;">{token_info} ({token_sub})</div>
+                <div class="metric-title">🪙 Tokens & Cost (Latest)</div>
+                <div class="metric-value">{current_res.total_tokens:,} <span style="font-size: 1rem; color: #94a3b8;">tokens</span></div>
+                <div style="font-size: 0.8rem; color: #94a3b8; margin-top: 4px;">In: {current_res.input_tokens:,} | Out: {current_res.output_tokens:,} | Est: <code>{cost_str}</code></div>
             </div>
             """,
             unsafe_allow_html=True,
         )
     with t_col4:
         query_total = len(st.session_state.query_history)
+        session_cost_str = f"~${st.session_state.session_total_cost_usd:.4f}"
         st.markdown(
             f"""
             <div class="metric-card">
                 <div class="metric-title">📈 Session Cumulative</div>
                 <div class="metric-value">{query_total} <span style="font-size: 1rem; color: #94a3b8;">quer{'ies' if query_total != 1 else 'y'}</span></div>
-                <div style="font-size: 0.8rem; color: #94a3b8; margin-top: 4px;">{st.session_state.session_llm_count} LLM calls | {st.session_state.session_tool_count} tool runs</div>
+                <div style="font-size: 0.8rem; color: #94a3b8; margin-top: 4px;">{st.session_state.session_total_tokens:,} tokens ({session_cost_str}) | {st.session_state.session_tool_count} tools</div>
             </div>
             """,
             unsafe_allow_html=True,
