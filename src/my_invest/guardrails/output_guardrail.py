@@ -64,10 +64,9 @@ class OutputGuardrail:
                 sanitized_text = re.sub(pattern, replacement, sanitized_text, flags=re.IGNORECASE)
                 guarantee_sanitized = True
 
-        # 2. Check if SEBI / market risk disclaimer is present
+        # 2. Check if formal SEBI compliance notice is present
         has_sebi_notice = bool(
-            re.search(r"subject\s+to\s+market\s+risks?", sanitized_text, re.IGNORECASE)
-            or re.search(r"sebi\s+(registered|compliance|disclaimer|regulations?)", sanitized_text, re.IGNORECASE)
+            re.search(r"\bsebi\b", sanitized_text, re.IGNORECASE)
         )
 
         disclaimer_added = False

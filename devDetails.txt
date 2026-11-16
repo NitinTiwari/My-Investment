@@ -15,6 +15,8 @@ Table of Contents
 8. PART 8: AGENTIC EVALUATION HARNESS, CI/CD BENCHMARKS & TESTING (Q28 - Q29)
 9. PART 9: PRODUCTION DEPLOYMENT, TELEMETRY & RUNTIME OBSERVABILITY (Q30 - Q32)
 10. PART 10: ARCHITECTURAL TRADEOFFS, FAILURE MODES & FUTURE ROADMAP (Q33 - Q35)
+11. PART 11: DEEP-DIVE RUNTIME ORCHESTRATION & AGENTIC TOOL REASONING (Q36 - Q37)
+12. PART 12: ADVANCED MULTI-TIER CACHING INTERACTION, GRANULARITY & TTL POLICIES (Q38 - Q40)
 ----------------------------------------------------------------------------------------------------
 
 
@@ -932,6 +934,437 @@ Developer Answer:
    - Currently, Streamlit receives the full response upon completion (`agent.run`).
    - Roadmap: Implement token streaming and real-time tool status events via WebSockets, allowing the UI to render tool execution steps (e.g., 'Fetching SBI rates...', 'Querying AMFI NAV...') in real-time for improved perceived latency."
 ====================================================================================================
-[END OF DEVDETAILS.TXT]
+PART 11: DEEP-DIVE RUNTIME ORCHESTRATION & AGENTIC TOOL REASONING
 ====================================================================================================
 
+Q36: How does AdvisorService work? Walk through its end-to-end execution pipeline, role in the architecture, and how it handles guardrails, caching, and telemetry.
+----------------------------------------------------------------------------------------------------
+Context:
+The interviewer is assessing your understanding of core backend service orchestration, the Facade design pattern, execution pipelines, and runtime observability.
+
+Developer Answer:
+"In My-Invest, `AdvisorService` (located in `src/my_invest/advisor_service.py`) acts as the central orchestrator and implements the Facade Design Pattern. It exposes a single, clean entry point `run_advisory(prompt)` to clients (the Streamlit web app `app.py` and the CLI `main.py`), hiding the complexities of security classification, semantic caching, agent execution, compliance checks, and telemetry generation.
+
+End-to-End Execution Pipeline (Flow Diagram):
++-----------------------------------------------------------------------------------------+
+|                                User Natural Language Query                              |
++-----------------------------------------------------------------------------------------+
+                                             |
+                                             v
++-----------------------------------------------------------------------------------------+
+|                  AdvisorService.run_advisory(prompt) -> Start perf_counter              |
++-----------------------------------------------------------------------------------------+
+                                             |
+                                             v
++-----------------------------------------------------------------------------------------+
+| Step 1: Input Guardrail Validation (_input_guardrail.validate)                          |
+| - Fast regex injection filter (jailbreaks, developer mode, system prompts)              |
+| - LLM-as-a-Judge / Prompt Guard (meta-llama/Llama-Prompt-Guard-2-22M or Qwen JSON mode)  |
+| - Rule-based financial keyword/phrase fallback safety net                               |
++-----------------------------------------------------------------------------------------+
+                       |                                                |
+              [Rejected / Off-Topic]                                [Valid Query]
+                       |                                                |
+                       v                                                v
++---------------------------------------------+   +---------------------------------------+
+| Return Guardrail AdvisoryResult             |   | Step 2: Tier-2 Qdrant Semantic Cache  |
+| - Duration: ~150ms                          |   | (_cache.lookup)                       |
+| - LLM calls: 0, Tool calls: 0               |   | - FastEmbed BGE-small-en-v1.5 (384-d) |
+| - Tokens: 0, Cost: $0.00                    |   | - Cosine similarity search in Qdrant  |
+| - Actionable redirection message            |   |   Cloud collection with threshold >=0.92
++---------------------------------------------+   +---------------------------------------+
+                                                               |                     |
+                                                        [Cache Hit >= 0.92]    [Cache Miss]
+                                                               |                     |
+                                                               v                     v
++------------------------------------------------------------------+   +------------------+
+| Return Cached AdvisoryResult                                     |   | Step 3: Agent    |
+| - Duration: < 50ms                                               |   | Execution Loop   |
+| - LLM calls: 0, Tool calls: 0, Tokens: 0, Cost: $0.00            |   | (Agno Agent.run) |
+| - Stored advisory blueprint + tools metadata                     |   | - OpenRouter /   |
++------------------------------------------------------------------+   |   Groq Fallback  |
+                                                                       | - Max 8 Tool Hops|
+                                                                       +------------------+
+                                                                                 |
+                                                                                 v
++-----------------------------------------------------------------------------------------+
+| Step 4: Output Guardrail Enforcement (_output_guardrail.enforce)                        |
+| - Enforces mandatory SEBI Market Risk Notices and DICGC ₹5,00,000 deposit insurance     |
+| - Sanitizes illegal/unhedged return guarantees on market-linked instruments             |
++-----------------------------------------------------------------------------------------+
+                                             |
+                                             v
++-----------------------------------------------------------------------------------------+
+| Step 5: Tier-2 Semantic Cache Ingestion (_cache.store)                                  |
+| - Embeds prompt and upserts sanitized advisory text + metadata into Qdrant Cloud        |
++-----------------------------------------------------------------------------------------+
+                                             |
+                                             v
++-----------------------------------------------------------------------------------------+
+| Step 6: Telemetry Aggregation & Return AdvisoryResult                                   |
+| - Calculates duration_ms, input/output/total tokens, and estimated cost in USD          |
+| - Emits immutable AdvisoryResult dataclass to UI/CLI                                    |
++-----------------------------------------------------------------------------------------+
+
+Detailed 6-Step Breakdown:
+
+1. Step 1: Input Guardrail & Security Pre-Filter (advisor_service.py lines 66-84)
+   - Before consuming any LLM tokens or calling APIs, `_input_guardrail.validate(prompt)` inspects the input.
+   - Evaluates whether the query contains prompt injection/jailbreak patterns or is completely off-topic (e.g., weather, cricket, coding).
+   - If blocked, `run_advisory` returns immediately with `is_guarded=True`, `llm_call_count=0`, and an explanatory redirection message. Neither the agent nor the semantic cache is touched, completely preventing cache pollution.
+
+2. Step 2: Tier-2 Qdrant Semantic Cache Check (advisor_service.py lines 86-103)
+   - Invokes `self._cache.lookup(prompt)`.
+   - Generates a 384-dimensional dense vector locally using FastEmbed (`BAAI/bge-small-en-v1.5`) in ~15ms without external network overhead.
+   - Queries Qdrant Cloud using Cosine similarity. If a previous equivalent query matches with similarity >= 0.92, it immediately returns the cached advisory blueprint.
+   - Latency: < 50ms | LLM Calls: 0 | Tool Calls: 0 | Cost: $0.00.
+
+3. Step 3: Agno Agent Execution & Tool Invocation Loop (advisor_service.py lines 105-156)
+   - On a cache miss, retrieves the agent instance via `get_agent()`.
+   - Calls `agent.run(prompt)`. The agent interfaces with the OpenRouter LLM Gateway (or direct Groq fallback).
+   - Executes autonomous ReAct tool calls (fetching bank FD rates, querying AMFI mutual fund data, running compounding calculations) bounded by `agent_tool_call_limit=8`.
+   - Collects tools executed, assistant response turns, and input/output token counts from `response.metrics`.
+   - Computes query cost via `estimate_token_cost()`.
+
+4. Step 4: Output Guardrail Enforcement (advisor_service.py lines 158-160)
+   - Passes generated text to `_output_guardrail.enforce(text, prompt=prompt)`.
+   - Guarantees regulatory compliance: verifies presence of statutory SEBI disclaimers and DICGC ₹5,00,000 limits, automatically appending them if missing.
+   - Sanitizes false return guarantees (e.g., regex-rewriting 'guaranteed 15% return in mutual funds' to 'projected/historical 15% return').
+
+5. Step 5: Tier-2 Semantic Cache Ingestion (advisor_service.py lines 162-168)
+   - Calls `self._cache.store(prompt, text, tools_used, model_name)`.
+   - Embeds the user prompt and stores the validated, compliant advisory blueprint into Qdrant Cloud so future identical or paraphrased queries resolve instantly.
+
+6. Step 6: Telemetry Packaging and Returning AdvisoryResult (advisor_service.py lines 170-183)
+   - Packages all runtime metrics into an immutable `AdvisoryResult` dataclass:
+     * `prompt`: Raw user input.
+     * `text`: Sanitized, compliant Markdown advisory report.
+     * `duration_ms`: High-precision total turnaround latency.
+     * `model_name`: Active LLM identifier.
+     * `llm_call_count`: Number of reasoning turns.
+     * `tool_call_count`: Total tools dispatched.
+     * `tools_used`: Tuple of distinct tool names (used to render UI badges).
+     * `input_tokens`, `output_tokens`, `total_tokens`: Token accounting.
+     * `estimated_cost_usd`: Estimated query cost based on model pricing.
+     * `is_cached`: Boolean indicating if served via Qdrant cache hit.
+     * `similarity_score`: Cosine similarity score (e.g., 0.948 for 94.8% match).
+     * `is_guarded`: Boolean indicating if blocked by security/domain guardrails."
+
+
+Q37: A user can pass a prompt to get details of FD only, Mutual Funds only, or both. How does the agent decide which tools to call, when to call all tools, and how does advisor_agent decide the sequence and dependencies of tool calls?
+----------------------------------------------------------------------------------------------------
+Context:
+The interviewer is evaluating your knowledge of autonomous agent decision-making, ReAct (Reasoning + Acting) loops, JSON tool schemas, semantic matching of docstrings, and handling of multi-turn prerequisite data dependencies without hardcoding.
+
+Developer Answer:
+"In My-Invest, tool selection and sequencing are not driven by hardcoded Python if/else statements. Instead, they are governed by an autonomous ReAct (Reasoning + Acting) execution loop in the Agno framework powered by LLM Function Calling.
+
+The decision-making process relies on three architectural components in `src/my_invest/agents/advisor_agent.py`:
+1. JSON Tool Schemas & Semantic Docstrings
+2. System Prompt Intent Directives & Conditional Rules
+3. Prerequisite Data Dependencies (Directed Acyclic Graph of Facts)
+
+Here is how each dimension operates:
+
+1. How the Agent Decides WHICH Tools to Call (The 3 Scenarios):
+When the Agno agent initializes, it registers all 10 Python functions in `tools=[...]`. Agno introspects their signatures, type hints, and docstrings, converting them into OpenAI-compatible JSON function definitions:
+- `get_indian_bank_fd_rates`: 'Searches online for the latest Indian bank fixed deposit interest rates (SBI, HDFC, ICICI, PNB, and Small Finance Banks)...'
+- `get_top_indian_mutual_funds_by_category`: 'Returns a curated list of top-performing, highly rated Indian Mutual Funds across categories...'
+- `get_mutual_fund_nav`: 'Fetches the latest official Net Asset Value (NAV)... using its schemeCode...'
+- `calculate_fd_maturity`: 'Calculates the exact maturity amount and interest earned for an Indian Bank Fixed Deposit (quarterly compounded)...'
+
+The LLM matches the user's intent against system instructions (lines 80-99):
+
+Scenario A: User asks for Bank FD only
+(e.g., 'I want to invest 5 lakhs in bank FD for 1 year as a senior citizen. Which bank gives best interest and is it safe under DICGC?')
+- Intent Extracted: Asset Class = Fixed Income / Bank FD; Corpus = ₹5,00,000; Horizon = 1 year; Investor = Senior Citizen.
+- System Directive Applied: 'If user asks specifically for only FD or only MF, focus on that asset class while mentioning the alternative... If user asks for only FD, output only that part.'
+- Tools Selected:
+  * `get_indian_bank_fd_rates` (fetches PSU/Private/SFB rates and senior citizen +0.50% rules)
+  * `calculate_fd_maturity(principal_inr=500000, annual_rate_pct=..., tenure_years=1)`
+- Tools Skipped: All mutual fund and ETF tools (`search_indian_mutual_funds`, `get_mutual_fund_nav`, `calculate_mf_returns`) are omitted because their semantic docstrings indicate equity/mutual fund data, which is irrelevant to the query.
+
+Scenario B: User asks for Mutual Funds only
+(e.g., 'Recommend top direct growth flexi cap mutual funds for a 5 year investment horizon with reasonable CAGR expectations.')
+- Intent Extracted: Asset Class = Equity / Mutual Funds; Category = Flexi Cap; Horizon = 5 years.
+- System Directive Applied: Focus strictly on Part B (Mutual Fund Strategy).
+- Tools Selected:
+  * `get_top_indian_mutual_funds_by_category(category='flexi cap')`
+  * `get_mutual_fund_nav(scheme_code=...)`
+  * `calculate_mf_returns(lumpsum_inr=..., expected_cagr_pct=..., tenure_years=5)`
+- Tools Skipped: `get_indian_bank_fd_rates` and `calculate_fd_maturity` are omitted.
+
+Scenario C: User asks for Both or a General Allocation
+(e.g., 'I want to invest 2 lacs inr in Indian bank fixed deposits and in Indian mutual funds for 3 years with balanced risk.')
+- System Directive Applied: 'If user asks for both FD and MF (or asks generally): Propose a balanced split (e.g., 50% FD + 50% MF)... Part A and part B both should be output.'
+- Tools Selected: The agent calls tools across both asset classes plus the allocation splitter.
+
+---
+
+2. How the Agent Decides the SEQUENCE of Tool Calling (Prerequisite Data Dependencies):
+Tools cannot be dispatched simultaneously in arbitrary order because certain tools require input parameters that only exist after earlier tools execute. The agent resolves these dependencies across iterative reasoning turns:
+
+Multi-Turn Sequencing Trace for a Balanced Allocation Query:
+
+Turn 1: Corpus Allocation Split & Initial Discovery
+- The agent recognizes that it cannot calculate returns until it knows the rupee amount allocated to each asset class, the prevailing FD interest rates, and the available mutual fund schemes.
+- It emits parallel tool calls:
+  1. `calculate_portfolio_split(total_corpus_inr=200000, fd_ratio_pct=50, mf_ratio_pct=50)` -> Returns ₹1,00,000 FD and ₹1,00,000 MF.
+  2. `get_indian_bank_fd_rates('3 year FD rates')` -> Returns rates across SBI, HDFC (7.0%), AU SFB (7.5%), Unity SFB (9.0%).
+  3. `get_top_indian_mutual_funds_by_category('flexi cap')` -> Returns fund names and unique scheme codes (e.g., Parag Parikh Flexi Cap, Scheme Code: `122639`).
+
+Turn 2: Parameter Resolution for Dependent Tools
+- The tool `get_mutual_fund_nav(scheme_code: int)` strictly requires an integer scheme code.
+- The agent could not call `get_mutual_fund_nav` in Turn 1 because the scheme code was unknown.
+- Now having received `122639` from Turn 1, the agent emits:
+  * `get_mutual_fund_nav(scheme_code=122639)` -> Resolves latest official AMFI NAV (e.g., ₹84.15).
+
+Turn 3: Grounded Mathematical Calculations
+- To calculate accurate compounding, the calculators require: Principal (from Turn 1 split), Tenure (from user prompt: 3 years), and Interest Rate / CAGR (from Turn 1 data).
+- The agent emits:
+  1. `calculate_fd_maturity(principal_inr=100000, annual_rate_pct=7.25, tenure_years=3)` -> Returns exact maturity value ₹1,24,055.21 and yield 7.45%.
+  2. `calculate_mf_returns(lumpsum_inr=100000, expected_cagr_pct=12.0, tenure_years=3)` -> Returns projected wealth ₹1,40,492.80 and capital gain ₹40,492.80.
+
+Turn 4: Final Synthesis & Compliance Notice
+- With all factual data, NAVs, and exact mathematics present in the context history, the LLM determines no further tool calls are required.
+- It synthesizes the complete advisory dossier (Executive Summary table, Part A FD Strategy, Part B MF Strategy, Tax considerations, and SEBI/DICGC notices).
+
+---
+
+3. What Prevents Tool Execution Chaos & Hallucinated Loops?
+- Numbered Step Instructions: System instructions explicitly define a 5-step sequence (1. Parse Intent -> 2. Gather Data -> 3. Recommend Split -> 4. Output Format -> 5. Tone & Accuracy).
+- Typed Signatures & Strict Docstrings: Prevent the model from hallucinating non-existent parameters or calling tools with empty arguments.
+- Tool Call Limit (`agent_tool_call_limit = 8`): Hard ceiling stops infinite recursive loops.
+- Tier-1 In-Memory TTL Cache (`@ttl_cache`): If the model calls the same tool twice during re-prompting or clarification, the second invocation resolves in < 1ms with 0 network calls."
+
+====================================================================================================
+PART 12: ADVANCED MULTI-TIER CACHING INTERACTION, GRANULARITY & TTL POLICIES
+====================================================================================================
+
+Q38: If a user prompt has a query like "Invest my 10 lacs in fd and 5 lacs in mf only", how do both caching layers interact if half of the required data is already warm in the Tier-1 in-memory cache?
+----------------------------------------------------------------------------------------------------
+Context:
+The interviewer is testing your understanding of cache granularity (macro-level blueprint caching vs. micro-level tool caching), partial cache hits, asymmetric portfolio splits, and financial regulatory guardrails (such as the DICGC ₹5 Lakh limit on ₹10 Lakh FD).
+
+Developer Answer:
+"In My-Invest, this scenario illustrates the distinct separation of responsibilities between Macro-Granularity (Tier-2 Vector Semantic Cache) and Micro-Granularity (Tier-1 In-Memory Tool Cache):
+
+1. Core Architectural Principle: Macro vs. Micro Cache Granularity
+- Tier-2 (Qdrant Cloud Vector Cache) operates at the Macro-Level: It caches the entire synthesized advisory dossier for a complete semantic prompt. It evaluates prompts atomically and does not perform partial responses.
+- Tier-1 (In-Memory `@ttl_cache`) operates at the Micro-Level: It caches individual tool outputs (e.g. bank FD interest rates, specific AMFI NAVs, mathematical compounding outputs) keyed strictly by exact function arguments.
+
+Because Tier-2 does not do partial matching, a novel corpus split (such as ₹10 Lakhs in FD + ₹5 Lakhs in MF) triggers a Tier-2 Cache Miss, handing execution to the Agno agent. Inside the agent loop, Tier-1 resolves the already-known facts in < 1ms, meaning the agent only incurs latency for the genuinely new calculations.
+
+2. Execution Trace for 'Invest my 10 lacs in fd and 5 lacs in mf only':
+
++-----------------------------------------------------------------------------------------+
+|                  User Prompt: 'Invest my 10 lacs in fd and 5 lacs in mf only'           |
++-----------------------------------------------------------------------------------------+
+                                             |
+                                             v
++-----------------------------------------------------------------------------------------+
+| Step 1: Tier-2 Semantic Vector Cache Check (Qdrant Cloud)                               |
+| - FastEmbed generates 384-d dense vector for the prompt.                                |
+| - Cosine similarity evaluated against existing collection (threshold >= 0.92).          |
+| ❌ CACHE MISS: Cosine similarity against standard ₹2L / ₹5L blueprints is ~0.82–0.86.    |
+|   (Prevents catastrophic false positive: will not serve a ₹2L plan for a ₹15L corpus!). |
++-----------------------------------------------------------------------------------------+
+                                             |
+                                             v (Execution falls through to Agno Agent)
++-----------------------------------------------------------------------------------------+
+| Step 2: Agno Agent ReAct Loop & Tier-1 In-Memory Tool Cache Interaction                 |
+|                                                                                         |
+| Sub-Task 1: Fetch Current FD Interest Rates                                             |
+|   Tool: get_indian_bank_fd_rates("current rates")                                       |
+|   👉 TIER-1 CACHE HIT (⚡ < 1ms): Cached in-memory from earlier queries (TTL: 24h).       |
+|                                                                                         |
+| Sub-Task 2: Compute FD Quarterly Compounding on ₹10 Lakhs                               |
+|   Tool: calculate_fd_maturity(principal_inr=1000000, annual_rate_pct=7.25, tenure=3)   |
+|   👉 TIER-1 CACHE MISS: New calculation. Evaluates 1000000 * (1 + 0.0725/4)^12         |
+|      in ~0.05ms = ₹12,40,552.10. Stored in Tier-1 cache (TTL: 1h).                     |
+|                                                                                         |
+| Sub-Task 3: Discover Top Flexi Cap Mutual Funds                                         |
+|   Tool: get_top_indian_mutual_funds_by_category("flexi cap")                            |
+|   👉 TIER-1 CACHE HIT (⚡ < 1ms): Resolves Parag Parikh Flexi Cap (code: 122639) (TTL: 24h)|
+|                                                                                         |
+| Sub-Task 4: Fetch Live AMFI NAV for Scheme 122639                                       |
+|   Tool: get_mutual_fund_nav(scheme_code=122639)                                         |
+|   👉 TIER-1 CACHE HIT (⚡ < 1ms): Resolved from 12h NAV cache. 0 HTTP calls to AMFI!     |
+|                                                                                         |
+| Sub-Task 5: Compute Mutual Fund CAGR Growth on ₹5 Lakhs                                 |
+|   Tool: calculate_mf_returns(lumpsum_inr=500000, expected_cagr_pct=12.0, tenure_years=3)   |
+|   👉 TIER-1 CACHE MISS: Evaluates 500000 * (1.12)^3 in ~0.05ms = ₹7,02,464.00.          |
+|      Stored in Tier-1 cache (TTL: 1h).                                                  |
++-----------------------------------------------------------------------------------------+
+                                             |
+                                             v
++-----------------------------------------------------------------------------------------+
+| Step 3: Synthesis & Critical Banking Guardrail (DICGC Limit)                            |
+| - The agent observes that the FD corpus is ₹10 Lakhs, which exceeds the DICGC           |
+|   ₹5,00,000 single-bank insurance limit.                                                |
+| - It advises splitting the ₹10 Lakhs across two separate scheduled banks (e.g. ₹5 Lakhs |
+|   in SBI/HDFC for tier-1 security, and ₹5 Lakhs in AU Small Finance Bank for yield),     |
+|   ensuring 100% of the ₹10 Lakhs remains DICGC-insured.                                 |
++-----------------------------------------------------------------------------------------+
+                                             |
+                                             v
++-----------------------------------------------------------------------------------------+
+| Step 4: Output Guardrail & Tier-2 Vector Cache Warming                                  |
+| - OutputGuardrail verifies SEBI risk disclaimers and DICGC insurance disclosures.       |
+| - AdvisorService upserts the new prompt and synthesized report into Qdrant Cloud.       |
+| 👉 FUTURE IDENTICAL OR PARAPHRASED QUERIES FOR ₹10L FD + ₹5L MF WILL NOW HIT TIER-2     |
+|    IN < 50ms WITH 0 TOKENS AND 0 TOOL CALLS!                                            |
++-----------------------------------------------------------------------------------------+
+
+Summary Table for Interview Discussion:
+| Layer | Granularity | Behavior for This Query | Latency Impact |
+|---|---|---|---|
+| Tier-2 (Qdrant Vector) | Macro (Full Query) | MISS (Unique ₹10L/₹5L corpus & split) | Falls through to Agent in ~15ms |
+| Tier-1: FD Rates | Micro (Tool) | HIT (Warm 24h cache) | Resolves in < 1ms (0 network calls) |
+| Tier-1: AMFI NAV | Micro (Tool) | HIT (Warm 12h cache) | Resolves in < 1ms (0 API calls to AMFI) |
+| Tier-1: Math Tools | Micro (Tool) | MISS -> Computed -> Cached | Computed in ~0.05ms |
+| Post-Execution | Macro (Qdrant Write) | Stored for future rephrased queries | Next similar query resolves in < 50ms |"
+
+
+Q39: If the Vector Cosine Similarity Cache registers a hit, will execution proceed to the In-Memory Tool Cache, and why?
+----------------------------------------------------------------------------------------------------
+Context:
+The interviewer is assessing your knowledge of short-circuit evaluation, pipeline execution hierarchy, and whether you understand where caches sit relative to the agent runtime.
+
+Developer Answer:
+"No, absolutely not. If the Vector Cosine Similarity Cache hits, execution never proceeds to the in-memory tool cache. It short-circuits the pipeline and returns the complete advisory blueprint immediately.
+
+1. Code Execution Proof (src/my_invest/advisor_service.py lines 86-105):
+```python
+# Step 2: Tier-2 Qdrant Semantic Cache Check
+cached_match = self._cache.lookup(prompt)
+if cached_match is not None:
+    duration_ms = round((perf_counter() - started_at) * 1000, 2)
+    # IMMEDIATE RETURN: Short-circuits the pipeline!
+    return AdvisoryResult(
+        prompt=prompt,
+        text=cached_match.text,          # Complete, pre-rendered advisory report
+        duration_ms=duration_ms,        # < 50ms
+        llm_call_count=0,               # 0 LLM inferences
+        tool_call_count=0,              # 0 tool calls
+        tools_used=cached_match.tools_used,
+        input_tokens=0,
+        output_tokens=0,
+        is_cached=True,
+        similarity_score=cached_match.similarity_score,
+    )
+
+# --- Line 105: Tool execution loop is ONLY reached on a Cache Miss ---
+agent = self.get_agent(...)
+response = agent.run(prompt)            # In-memory tool cache lives inside here
+```
+Because of `return AdvisoryResult(...)`, line 105 is never reached.
+
+2. Structural & Architectural Reasons:
+
+Reason A: Placement in the Architecture (Macro vs. Micro Hierarchy)
+- The Vector Semantic Cache sits at the Service Orchestration Layer (top of the funnel).
+- The In-Memory Cache sits inside the individual Tool Functions as a decorator (`@ttl_cache` in `src/my_invest/tools/cache.py`).
+- Since the agent runtime is bypassed, none of the tool functions (`get_indian_bank_fd_rates`, `get_mutual_fund_nav`, `calculate_fd_maturity`) are called. Consequently, their `@ttl_cache` decorators are never invoked.
+
+Reason B: The Vector Cache already holds the FINISHED End Product
+- The in-memory cache stores raw building blocks (e.g. SBI's 7.0% rate, Parag Parikh's NAV ₹84.15).
+- The vector cache stores the fully synthesized, formatted Markdown dossier with Executive Summary tables, quarterly compounding maturity figures, asset allocation splits, and statutory SEBI/DICGC disclaimers.
+- Re-querying tool caches when the finalized answer is already available would be completely redundant.
+
+Reason C: Latency & Concurrency Optimization
+- Accessing the in-memory cache requires acquiring Python's `threading.Lock()` on the cache's internal `OrderedDict`.
+- By short-circuiting at the vector cache:
+  1. Turnaround latency is locked at < 50ms (15ms local FastEmbed embedding + 30ms Qdrant network roundtrip).
+  2. The 3,000ms–8,000ms LLM agent generation loop is avoided.
+  3. Eliminates lock contention, leaving the in-memory tool cache available for other concurrent user queries that genuinely need it."
+
+
+Q40: How long is cached data from the Vector Cosine Similarity Cache checked, and does it have an expiration limit similar to in-memory ttl_cache?
+----------------------------------------------------------------------------------------------------
+Context:
+The interviewer is testing your understanding of vector database lifecycle management, temporal data decay in financial domains (stale FD rates and NAVs), and how to implement TTL in vector databases that lack native automatic key expiration.
+
+Developer Answer:
+"In My-Invest, vector points in Qdrant Cloud are stored with a timestamp payload, and their temporal lifecycle is managed through explicit financial expiration policies:
+
+1. Current State in the Codebase (src/my_invest/cache/qdrant_cache.py line 181):
+When an advisory blueprint is saved, a Unix epoch timestamp is recorded in the vector point's payload:
+```python
+point = PointStruct(
+    id=point_id,
+    vector=vector,
+    payload={
+        "prompt": prompt.strip(),
+        "text": text,
+        "tools_used": list(tools_used),
+        "model_name": model_name,
+        "cached_at": time.time(),     # Unix epoch timestamp recorded at creation
+    },
+)
+```
+Unlike Redis or in-memory dicts, vector databases do not natively expire keys out-of-the-box. Points in Qdrant persist indefinitely unless a TTL filtering policy or pruning job is enforced.
+
+2. Why Financial Vector Caching MUST Have an Expiration Limit:
+In personal wealth management, returning a permanently cached vector blueprint is dangerous:
+- The Reserve Bank of India (RBI) reviews and revises repo rates bi-monthly, altering bank FD interest rates.
+- Mutual Fund NAVs update every business day at 11:00 PM IST under SEBI rules.
+- Union Budgets alter capital gains tax regimes (e.g. Budget 2024 raising Equity LTCG to 12.5%).
+If a vector cache lived indefinitely, a user asking a question 6 months later would receive stale interest rates, incorrect maturity projections, or obsolete tax calculations.
+
+3. The Three Production Patterns to Enforce TTL on Qdrant:
+
+Pattern A: Client-Side Timestamp Check on Lookup (Simplest & Direct)
+When `_cache.lookup(prompt)` retrieves the nearest neighbor from Qdrant, it validates the `cached_at` payload against a maximum TTL:
+```python
+MAX_VECTOR_CACHE_TTL = 7 * 86400  # 7 days validity
+
+if results.points:
+    top_match = results.points[0]
+    payload = top_match.payload or {}
+    cached_at = payload.get("cached_at", 0)
+    
+    if (time.time() - cached_at) > MAX_VECTOR_CACHE_TTL:
+        logger.info(f'Vector match found, but expired ({round((time.time() - cached_at)/86400, 1)} days old). Treating as Cache Miss.')
+        return None  # Triggers a fresh agent run to refresh stale rates/NAVs
+```
+
+Pattern B: Qdrant Native Payload Range Filter (Most Efficient)
+Instead of retrieving an expired point and discarding it in Python, Qdrant can filter out stale vectors directly on the cluster before vector distance calculation:
+```python
+from qdrant_client.models import Filter, FieldCondition, Range
+
+cutoff_timestamp = time.time() - (7 * 86400)  # Valid for last 7 days
+
+results = self._client.query_points(
+    collection_name=self.collection_name,
+    query=query_vector,
+    limit=1,
+    score_threshold=self.threshold,
+    query_filter=Filter(
+        must=[
+            FieldCondition(
+                key="cached_at",
+                range=Range(gte=cutoff_timestamp)
+            )
+        ]
+    )
+)
+```
+
+Pattern C: Event-Driven Invalidation (Financial Market Events)
+Rather than a purely time-based cutoff, the cache is invalidated when real-world market conditions change:
+- Trigger: RBI Monetary Policy Committee (MPC) announces a repo rate change.
+- Action: Run `python inspect_qdrant.py --clear` or call `client.delete(collection_name=...)` to flush the vector collection so new bank FD rates are immediately re-benchmarked across all subsequent queries.
+
+4. Comparison: In-Memory TTL vs. Vector Semantic Cache TTL:
+| Dimension | Tier-1 (In-Memory Tool Cache) | Tier-2 (Qdrant Vector Semantic Cache) |
+|---|---|---|
+| What is Cached | Raw tool data (individual bank FD rates, specific scheme NAVs, compound interest math). | Complete, ready-to-render advisory blueprint (Markdown report + tables + SEBI disclaimers). |
+| TTL Duration | 1 hour to 24 hours (NAV updates daily at 11 PM; FD benchmark rates cached for 24h). | 7 days to 30 days (balances 80%+ token savings with factual currency). |
+| Eviction Mechanism | OrderedDict.popitem(last=False) (LRU) + monotonic timestamp comparison in Python memory. | Metadata timestamp filtering (cached_at) or scheduled pruning via Qdrant range filters / scripts. |
+| Storage Location | Local server RAM (volatile, lost on server restart). | Qdrant Cloud Cluster (persistent disk/storage across server restarts). |"
+
+====================================================================================================
+[END OF DEVDETAILS.TXT]
+====================================================================================================

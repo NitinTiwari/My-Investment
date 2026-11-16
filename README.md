@@ -226,12 +226,21 @@ My-Invest/
 ├── src/
 │   └── my_invest/
 │       ├── __init__.py
-│       ├── settings.py      # Pydantic Settings & environment manager
+│       ├── settings.py        # Pydantic Settings & environment manager
 │       ├── advisor_service.py # Advisor orchestration service
 │       │
 │       ├── agents/
 │       │   ├── __init__.py
 │       │   └── advisor_agent.py # Agno Agent configuration & system prompt
+│       │
+│       ├── harness/           # Agentic Harness for evaluation & benchmarking
+│       │   ├── __init__.py
+│       │   ├── benchmarks.py    # Curated golden benchmark scenarios
+│       │   ├── mock_adapter.py  # Deterministic mock fixtures & simulated runner
+│       │   ├── tracer.py        # Trajectory, tool call & latency tracer
+│       │   ├── evaluators.py    # Multi-dimensional evaluators (Tools, SEBI/DICGC, Math)
+│       │   ├── runner.py        # Benchmark suite runner & scorecard generator
+│       │   └── cli.py           # Command-line interface for the harness
 │       │
 │       └── tools/
 │           ├── __init__.py
@@ -241,6 +250,8 @@ My-Invest/
 │
 └── tests/
     ├── conftest.py          # Pytest path and environment fixtures
+    ├── test_harness.py      # Automated Pytest suite for the Agentic Harness
+    ├── test_guardrails.py   # Guardrails & LLM-as-a-Judge validation
     └── test_tools.py        # Automated test suite for financial tools
 ```
 
@@ -346,6 +357,7 @@ All settings are managed via [`pydantic-settings`](https://docs.pydantic.dev/lat
 | `QDRANT_COLLECTION` | `investment_advisory_cache` | Name of the Qdrant vector collection for semantic cache |
 | `SEMANTIC_CACHE_ENABLED` | `true` | Enables or disables Tier-2 Qdrant semantic caching |
 | `SEMANTIC_CACHE_THRESHOLD` | `0.92` | Cosine similarity threshold for cache hits (0.85 – 0.98) |
+| `SEMANTIC_CACHE_TTL_DAYS` | `2.0` | Maximum validity window in days for cached blueprints (Qdrant native range filter) |
 
 ### Streamlit Community Cloud Deployment
 When deploying to Streamlit Cloud, add the following to **App Settings $\rightarrow$ Secrets**:
@@ -364,23 +376,41 @@ QDRANT_API_KEY = "your_qdrant_api_key_here"
 QDRANT_COLLECTION = "investment_advisory_cache"
 SEMANTIC_CACHE_ENABLED = "true"
 SEMANTIC_CACHE_THRESHOLD = "0.92"
+SEMANTIC_CACHE_TTL_DAYS = 2.0
 ```
 
 ---
 
-## Testing
+## Testing & Agentic Evaluation Harness
 
-Run the automated test suite using `pytest`:
+### 1. Run the Agentic Harness via CLI
+My-Invest includes a production-grade **Agentic Evaluation Harness** that evaluates the autonomous advisor across tool selection precision, SEBI/DICGC compliance, financial calculation accuracy, and security guardrails.
+
 ```bash
-pytest -v
+# Run in deterministic offline mock mode (fast, zero API costs)
+python -m my_invest.harness.cli --mode mock
+
+# Export markdown scorecard report to file
+python -m my_invest.harness.cli --mode mock --output scorecard.md
+
+# Enforce quality gate in CI/CD (fails build if pass rate < 85%)
+python -m my_invest.harness.cli --mode mock --fail-under 85
+
+# Run in live mode against real LLM gateway endpoints
+python -m my_invest.harness.cli --mode live
 ```
 
-The test suite validates:
-- Benchmark FD data structures across PSBs, Private, and Small Finance Banks.
-- AMFI API search endpoint functionality and scheme resolution.
-- Live AMFI NAV retrieval with valid response schemas.
-- Mathematical precision for quarterly compounding FD maturity and CAGR calculations.
-- Portfolio split mathematics.
+### 2. Run Automated Pytest Suite
+```bash
+# Run the complete agentic harness and tool test suite
+pytest tests/test_harness.py -v
+```
+
+The harness automatically grades each scenario across:
+- **Tool Selection Accuracy**: Precision, Recall, and F1 score against expected financial tools.
+- **SEBI & DICGC Regulatory Compliance**: Mandatory market risk notices, ₹5,00,000 deposit insurance limits, and sanitization of unrealistic return guarantees.
+- **Security & Guardrail Efficacy**: Zero-token interception of prompt injection, jailbreak, and out-of-domain queries.
+- **Trajectory & Telemetry**: Latency percentiles, step counts, and token usage metrics.
 
 ---
 

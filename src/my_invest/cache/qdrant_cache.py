@@ -14,7 +14,14 @@ import uuid
 
 from fastembed import TextEmbedding
 from qdrant_client import QdrantClient
-from qdrant_client.models import Distance, PointStruct, VectorParams
+from qdrant_client.models import (
+    Distance,
+    FieldCondition,
+    Filter,
+    PointStruct,
+    Range,
+    VectorParams,
+)
 
 from my_invest.settings import settings
 
@@ -43,12 +50,14 @@ class QdrantSemanticCache:
         collection_name: Optional[str] = None,
         threshold: Optional[float] = None,
         enabled: Optional[bool] = None,
+        ttl_days: Optional[float] = None,
     ) -> None:
         self.url = url or settings.qdrant_url
         self.api_key = api_key or settings.qdrant_api_key
         self.collection_name = collection_name or settings.qdrant_collection_name
         self.threshold = threshold if threshold is not None else settings.semantic_cache_threshold
         self.enabled = enabled if enabled is not None else settings.semantic_cache_enabled
+        self.ttl_days = ttl_days if ttl_days is not None else settings.semantic_cache_ttl_days
 
         self._lock = Lock()
         self._client: Optional[QdrantClient] = None
@@ -59,6 +68,11 @@ class QdrantSemanticCache:
 
         if self.enabled:
             self._initialize_client()
+
+    @property
+    def ttl_seconds(self) -> float:
+        """Returns the semantic cache TTL in seconds."""
+        return self.ttl_days * 86400.0
 
     def _get_embedder(self) -> TextEmbedding:
         if self._embedder is None:
@@ -103,13 +117,24 @@ class QdrantSemanticCache:
                     vectors_config=VectorParams(size=384, distance=Distance.COSINE),
                 )
                 logger.info(f"Created Qdrant collection '{self.collection_name}' (vector size 384, Cosine).")
+            # Ensure payload index on 'cached_at' for fast cluster-side range filtering (server/cloud mode)
+            try:
+                from qdrant_client.models import PayloadSchemaType
+                self._client.create_payload_index(
+                    collection_name=self.collection_name,
+                    field_name="cached_at",
+                    field_schema=PayloadSchemaType.FLOAT,
+                )
+            except Exception:
+                pass
         except Exception as e:
             logger.error(f"Error ensuring Qdrant collection '{self.collection_name}': {e}")
 
     def lookup(self, prompt: str) -> Optional[SemanticCacheMatch]:
         """
         Queries Qdrant for a semantically similar previous investment prompt.
-        Returns the cached advisory blueprint if similarity >= threshold, else None.
+        Enforces Pattern B: Native Qdrant Range Filter for TTL cutoff (default: 2 days).
+        Returns the cached advisory blueprint if similarity >= threshold and point is not expired, else None.
         """
         if not self.enabled or not self._client:
             return None
@@ -118,11 +143,25 @@ class QdrantSemanticCache:
             embedder = self._get_embedder()
             query_vector = list(embedder.embed([prompt.strip()]))[0].tolist()
 
+            # Pattern B: Native Qdrant Payload Range Filter for TTL cutoff
+            query_filter = None
+            if self.ttl_days and self.ttl_days > 0:
+                cutoff_timestamp = time.time() - self.ttl_seconds
+                query_filter = Filter(
+                    must=[
+                        FieldCondition(
+                            key="cached_at",
+                            range=Range(gte=cutoff_timestamp),
+                        )
+                    ]
+                )
+
             results = self._client.query_points(
                 collection_name=self.collection_name,
                 query=query_vector,
                 limit=1,
                 score_threshold=self.threshold,
+                query_filter=query_filter,
             )
 
             if results.points:
@@ -213,6 +252,8 @@ class QdrantSemanticCache:
             "total_queries": total_queries,
             "hit_rate_pct": hit_rate,
             "threshold": self.threshold,
+            "ttl_days": self.ttl_days,
+            "ttl_seconds": self.ttl_seconds,
             "collection_name": self.collection_name,
             "total_cached_blueprints": points_count,
             "cloud_url": self.url if self.url else "Not Configured",

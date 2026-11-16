@@ -96,6 +96,12 @@ class Settings(BaseSettings):
     qdrant_collection_name: str = Field(default_factory=lambda: _get_config('QDRANT_COLLECTION', 'investment_advisory_cache'))
     semantic_cache_enabled: bool = Field(default_factory=lambda: str(_get_config('SEMANTIC_CACHE_ENABLED', 'true')).lower() in ('true', '1', 'yes'))
     semantic_cache_threshold: float = Field(default_factory=lambda: float(_get_config('SEMANTIC_CACHE_THRESHOLD', 0.92)))
+    semantic_cache_ttl_days: float = Field(default_factory=lambda: float(_get_config('SEMANTIC_CACHE_TTL_DAYS', 2.0)))
+
+    @property
+    def semantic_cache_ttl_seconds(self) -> float:
+        """Returns the semantic cache TTL in seconds (days * 86400)."""
+        return self.semantic_cache_ttl_days * 86400.0
 
 
 @lru_cache
